@@ -1,0 +1,22 @@
+# STM32CubeIDE generated build products
+/build/
+/Debug/
+/Release/
+/firmware/
+
+# Native host-test binaries
+/tests/host/*.exe
+
+# Generic compiler/editor artifacts
+*.o
+*.d
+*.su
+*.cyclo
+*.map
+*.elf
+*.hex
+*.bin
+*.log
+*.bak
+*.tmp
+.idea/

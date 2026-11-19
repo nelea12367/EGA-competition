@@ -1,0 +1,112 @@
+/**
+ * @file motor_3508.h
+ * @brief M3508 + C620 电流控制接口。
+ *
+ * 控制帧：0x200
+ * 反馈帧：0x201～0x204
+ *
+ * 一个 Motor3508 对象管理四个槽位。
+ * 槽位号范围 0～3，对应反馈 ID 0x201～0x204。
+ */
+
+#ifndef MOTOR_3508_H
+#define MOTOR_3508_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "dji_motor.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* 控制帧 ID，对应槽位 0～3 的反馈 ID 为 0x201～0x204。 */
+#define MOTOR3508_TX_ID 0x200U
+#define MOTOR3508_RX_ID 0x201U
+
+/* 5～8 号电机的控制帧。本工程只用它给 5～8 号发 0 电流（ID 探测用）。 */
+#define MOTOR3508_GROUP2_TX_ID 0x1FFU
+
+/* C620 原始电流范围。 */
+#define MOTOR3508_CURRENT_MAX 16384
+
+/* M3508 对象与公共电机结构使用同一组字段。 */
+typedef DjiMotor Motor3508;
+
+/**
+ * @brief 初始化 M3508 对象。
+ *
+ * @param motor   电机对象。
+ * @param reversed 方向位掩码，bit0～bit3 对应槽位 0～3。
+ *                 对应位为 1 时，该槽位的控制量和反馈量取反。
+ *
+ * 初始化完成后：
+ *   command、position、velocity、current 全部清零；
+ *   encoder 写入初值 0xFFFF；
+ *   round 清零。
+ */
+extern volatile uint8_t g_motor_id_mask;
+extern volatile uint32_t g_motor_rx_count[4];
+
+void Motor3508_Init(Motor3508 *motor, uint8_t reversed);
+
+/**
+ * @brief 设置指定槽位的原始电流。
+ *
+ * @param motor   电机对象。
+ * @param slot    槽位号，范围 0～3。
+ * @param current 原始电流，范围 -16384～+16384。
+ *
+ * 函数内部完成范围限制和方向处理，结果写入 command[slot]。
+ */
+void Motor3508_SetCurrent(Motor3508 *motor, uint8_t slot, int16_t current);
+
+/**
+ * @brief 解析一帧 M3508 反馈。
+ *
+ * @param motor 电机对象。
+ * @param id    CAN 帧 ID。
+ * @param data  数据缓冲区，长度 8 字节。
+ * @param size  数据长度。
+ *
+ * 函数处理 ID 为 0x201～0x204、长度为 8 的帧；
+ * 其他帧直接返回。该函数在 CAN 接收回调中调用。
+ */
+void Motor3508_Update(Motor3508 *motor,
+                      uint32_t id,
+                      const uint8_t *data,
+                      uint8_t size);
+
+/**
+ * @brief 判断某一路电机的反馈是否还在超时窗口内。
+ *
+ * @param motor      电机对象。
+ * @param slot       槽位号，范围 0～3。
+ * @param now_ms     当前毫秒节拍（HAL_GetTick）。
+ * @param timeout_ms 反馈超时时间，例如 100。
+ *
+ * @return true 收到过反馈，且最近一帧不早于 now_ms - timeout_ms。
+ */
+bool Motor3508_IsOnline(const Motor3508 *motor,
+                        uint8_t slot,
+                        uint32_t now_ms,
+                        uint32_t timeout_ms);
+
+/**
+ * @brief 发送 0x200 控制帧。
+ *
+ * @param motor 电机对象。
+ *
+ * @return true  帧已写入 CAN 发送 FIFO。
+ * @return false 对象为空，或 CAN 发送返回 HAL_ERROR。
+ *
+ * 四个槽位的 command 按大端 int16 打包为 8 字节。
+ */
+bool Motor3508_Send(Motor3508 *motor);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MOTOR_3508_H */
