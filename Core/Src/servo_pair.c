@@ -19,8 +19,8 @@ static void ServoApply(void)
                                 VEHICLE_WRIST_MIN_US, VEHICLE_WRIST_MAX_US);
     s_state.gripper_us = ServoMap(s_state.gripper_deg, VEHICLE_GRIPPER_MIN_DEG, VEHICLE_GRIPPER_MAX_DEG,
                                   VEHICLE_GRIPPER_MIN_US, VEHICLE_GRIPPER_MAX_US);
-    __HAL_TIM_SET_COMPARE(&htim12, TIM_CHANNEL_1, s_state.wrist_us);
-    __HAL_TIM_SET_COMPARE(&htim12, TIM_CHANNEL_2, s_state.gripper_us);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, s_state.wrist_us);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, s_state.gripper_us);
 }
 
 void ServoPair_Init(void)
@@ -28,8 +28,8 @@ void ServoPair_Init(void)
     s_state.wrist_deg = VEHICLE_WRIST_NEUTRAL_DEG;
     s_state.gripper_deg = VEHICLE_GRIPPER_NEUTRAL_DEG;
     ServoApply();
-    (void)HAL_TIM_PWM_Start(&htim12, TIM_CHANNEL_1);
-    (void)HAL_TIM_PWM_Start(&htim12, TIM_CHANNEL_2);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 }
 
 void ServoPair_SetWristRate(float normalized_rate, float dt_s)

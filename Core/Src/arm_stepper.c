@@ -72,8 +72,15 @@ void ArmStepper_SetVelocity(float velocity_normalized, bool enabled, float dt_s)
     }
 
     s_state.direction_positive = (s_state.command_hz > 0.0f);
-    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14,
-                      ((s_state.direction_positive == (VEHICLE_STEPPER_DIR_POSITIVE != 0)) ? GPIO_PIN_SET : GPIO_PIN_RESET));
+    {
+        bool driver_direction_high = (s_state.direction_positive == (VEHICLE_STEPPER_DIR_POSITIVE != 0));
+#if (VEHICLE_STEPPER_DIRECT_DM430 != 0)
+        /* Common-anode direct wiring: a GPIO low sinks DIR- and is a DM430 logic high. */
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, driver_direction_high ? GPIO_PIN_RESET : GPIO_PIN_SET);
+#else
+        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, driver_direction_high ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#endif
+    }
     StepperSetEnable(true);
     period_us = (uint32_t)(1000000.0f / Vehicle_AbsF(s_state.command_hz));
     if (period_us < 2U) period_us = 2U;

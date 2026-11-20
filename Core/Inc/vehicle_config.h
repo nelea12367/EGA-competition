@@ -17,10 +17,18 @@
 #define VEHICLE_REFERENCE_HOLD_MS     500U
 #define VEHICLE_RC_DEADBAND           0.08f
 
+/*
+ * Temporary direct DM430 interface:
+ *   DM-MC02 5V -> PUL+/DIR+, PD15 -> PUL-, PD14 -> DIR-.
+ * PD15/PD14 are configured as open-drain sinks, not 3.3V push-pull outputs.
+ */
+#define VEHICLE_STEPPER_DIRECT_DM430        1
+#define VEHICLE_BOARD_5V_ENABLE_ACTIVE_HIGH 1
+
 /* DM430 pulse/direction axis. Position is counted in pulses from manual zero. */
 #define VEHICLE_STEPPER_MIN_PULSE       (-12000)
 #define VEHICLE_STEPPER_MAX_PULSE       12000
-#define VEHICLE_STEPPER_MAX_HZ          10000.0f
+#define VEHICLE_STEPPER_MAX_HZ          1000.0f /* Conservative direct-connection bench-test limit. */
 #define VEHICLE_STEPPER_ACCEL_HZ_S      15000.0f
 #define VEHICLE_STEPPER_DIR_POSITIVE    1
 #define VEHICLE_STEPPER_USE_ENA         0

@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "gpio.h"
+#include "vehicle_config.h"
 
 /* USER CODE BEGIN 0 */
 
@@ -46,21 +47,38 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
 
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  /* DM430 DIR = PD14, ENA = PE14.  Both default inactive before timers start. */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_RESET);
-  GPIO_InitStruct.Pin = GPIO_PIN_14;
+  /* Board 5V output is used only as the DM430 PUL+/DIR+ signal supply. */
+#if (VEHICLE_STEPPER_DIRECT_DM430 != 0)
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15,
+                    (VEHICLE_BOARD_5V_ENABLE_ACTIVE_HIGH != 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+#endif
+
+  /* Direct DM430 DIR is an open-drain sink: reset state means driver logic high. */
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = GPIO_PIN_14;
+#if (VEHICLE_STEPPER_DIRECT_DM430 != 0)
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+#else
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+#endif
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, GPIO_PIN_RESET);
   GPIO_InitStruct.Pin = GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
 }
