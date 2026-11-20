@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $out = Join-Path $PSScriptRoot "test_vehicle_math.exe"
 
 $compiler = Get-Command gcc.exe -ErrorAction SilentlyContinue
@@ -19,3 +19,5 @@ if ($LASTEXITCODE -ne 0) { throw "host-test compile failed" }
 
 & $out
 if ($LASTEXITCODE -ne 0) { throw "host test failed" }
+
+& (Join-Path $PSScriptRoot "test_joint_routing.ps1")

@@ -114,9 +114,11 @@ void VehicleControl_Update(uint32_t now_ms)
     }
 
     ArmStepper_SetVelocity(VehicleAxis(rc, VEHICLE_CH_STEPPER), true, dt_s);
-    Arm2006_SetVelocity(VehicleAxis(rc, VEHICLE_CH_LOWER_ARM));
+    /* The C610/M2006 is mechanically installed on the wrist. */
+    Arm2006_SetVelocity(VehicleAxis(rc, VEHICLE_CH_WRIST));
     Arm2006_Update(now_ms, dt_s, true);
-    ServoPair_SetWristRate(VehicleAxis(rc, VEHICLE_CH_WRIST), dt_s);
+    /* TIM1_CH1 servo is mechanically installed on the lower arm. */
+    ServoPair_SetWristRate(VehicleAxis(rc, VEHICLE_CH_LOWER_ARM), dt_s);
     if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_OPEN_LEVEL)
         ServoPair_SetGripperRate(1.0f, dt_s);
     else if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_CLOSE_LEVEL)
