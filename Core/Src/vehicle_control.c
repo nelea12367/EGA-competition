@@ -27,6 +27,20 @@ static bool VehicleInputsCentered(const RcData *rc)
            (VehicleAxis(rc, VEHICLE_CH_WRIST) == 0.0f);
 }
 
+/* 软停步进：保持驱动器通电，按减速斜率把脉冲频率降到 0 再断脉冲。
+ * 硬停（直接切 PWM）在几百 Hz 上会让电机动丢步，大臂"啪"掉一截就是这么来的。 */
+static void StepperSoftStop(float dt_s)
+{
+    if (ArmStepper_GetState()->reference_valid)
+    {
+        ArmStepper_SetVelocity(0.0f, true, dt_s);
+    }
+    else
+    {
+        ArmStepper_Stop();
+    }
+}
+
 void VehicleControl_Init(void)
 {
     s_state.mode = VEHICLE_MODE_DRIVE;
@@ -81,8 +95,16 @@ void VehicleControl_Update(uint32_t now_ms)
 
     if (s_state.mode == VEHICLE_MODE_DRIVE)
     {
+        /* 底盘模式下机械臂就地"抱死"：步进保持通电、腕部继续跑位置环。
+         * 原来这里直接把 2006 电流清零，一切到跑车模式腕就自由落体。 */
+#if (VEHICLE_HOLD_ARM_IN_DRIVE != 0)
+        StepperSoftStop(dt_s);
+        Arm2006_SetVelocity(0.0f);
+        Arm2006_Update(now_ms, dt_s, true);
+#else
         ArmStepper_Stop();
         Arm2006_Stop();
+#endif
         ServoPair_HoldSafe();
         Chassis_Update(now_ms);
         return;

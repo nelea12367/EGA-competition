@@ -19,6 +19,8 @@
 #define RC_IBUS_FRAME  32U
 #define RC_SBUS_FRAME  25U
 #define RC_TRY_MS      600U
+/* 归一化摇杆量的一阶低通系数（0 = 不滤波，1 = 完全不滤波跟随）。 */
+#define RC_ANALOG_FILTER 0.5f
 
 typedef enum
 {
@@ -54,7 +56,11 @@ static void rc_apply(const uint16_t *raw, uint8_t count, uint16_t center, float 
         }
 
         s_data.raw[i] = value;
-        s_data.analog[i] = analog;
+
+        /* 一阶低通：接收机每帧有几个计数的抖动，直接进机械臂位置环会被放大成可见抖动。
+         * 0.5 的系数在 14ms 帧率下约等于 20ms 时间常数，操纵手感基本不变。 */
+        s_data.analog[i] += RC_ANALOG_FILTER * (analog - s_data.analog[i]);
+        analog = s_data.analog[i];
 
         if (value < RcMin[i])
         {

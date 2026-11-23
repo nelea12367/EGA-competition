@@ -64,9 +64,9 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 #endif
 
-  /* Direct DM430 DIR is an open-drain sink: reset state means driver logic high. */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET);
-  GPIO_InitStruct.Pin = GPIO_PIN_14;
+  /* PA00 three-pin signal drives DM430 DIR- as an open-drain sink. */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
 #if (VEHICLE_STEPPER_DIRECT_DM430 != 0)
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
 #else
@@ -74,7 +74,7 @@ void MX_GPIO_Init(void)
 #endif
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, GPIO_PIN_RESET);
   GPIO_InitStruct.Pin = GPIO_PIN_14;

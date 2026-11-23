@@ -21,3 +21,5 @@ if ($LASTEXITCODE -ne 0) { throw "host-test compile failed" }
 if ($LASTEXITCODE -ne 0) { throw "host test failed" }
 
 & (Join-Path $PSScriptRoot "test_joint_routing.ps1")
+& (Join-Path $PSScriptRoot "test_stepper_pin_routing.ps1")
+& (Join-Path $PSScriptRoot "test_arm_safety_config.ps1")

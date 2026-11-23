@@ -5,7 +5,7 @@
 
 typedef struct
 {
-    float wrist_deg;
+    float wrist_command_us;
     float gripper_deg;
     uint16_t wrist_us;
     uint16_t gripper_us;

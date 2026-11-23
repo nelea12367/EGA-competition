@@ -19,6 +19,14 @@ float Vehicle_SlewF(float current, float target, float maximum_rate, float dt_s)
     return Vehicle_ClampF(target, current - limit, current + limit);
 }
 
+float Vehicle_UpdatePulseUs(float current_us, float normalized_rate, float maximum_rate_us_s,
+                            float dt_s, float minimum_us, float maximum_us)
+{
+    float rate = Vehicle_ClampF(normalized_rate, -1.0f, 1.0f);
+    float next = current_us + rate * maximum_rate_us_s * dt_s;
+    return Vehicle_ClampF(next, minimum_us, maximum_us);
+}
+
 uint32_t Vehicle_PulseUsToCompare(uint16_t pulse_us, uint32_t timer_hz)
 {
     return ((uint32_t)pulse_us * timer_hz) / 1000000U;

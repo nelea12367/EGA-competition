@@ -81,13 +81,13 @@
  * 5. 遥控映射
  *    左摇杆：上下 = 前进/后退（CH3），左右 = 左右平移（CH4）
  *    右摇杆：左右 = 原地自转（CH1）
- *    CH7 = SWA（控灯用）      CH8 = SWB（低速/高速）
+ *    CH7 = SWA（控灯用）      CH8 = SWB（高速底盘/机械臂模式）
  * ======================================================================*/
 #define RC_CH_FORWARD             2U      /* CH3：左摇杆上下 = 前进/后退 */
 #define RC_CH_STRAFE              3U      /* CH4：左摇杆左右 = 平移 */
 #define RC_CH_ROTATE              0U      /* CH1：右摇杆左右 = 自转 */
 #define RC_CH_ARM                 6U      /* CH7：SWA（实测这台遥控器 SWA 在 CH7） */
-#define RC_CH_MODE                7U      /* CH8：SWB = 低速/高速 */
+#define RC_CH_MODE                7U      /* CH8：SWB 上 = 高速底盘；下 = 机械臂模式 */
 
 /* 摇杆死区（归一化后 ±0.06，抵消中点漂移和手抖）。 */
 #define RC_DEADBAND               0.06f
@@ -121,7 +121,8 @@
  * 如果方向反了（拨上去反而是不使能），把这里换成另一个。 */
 #define RC_ARM_SWITCH_LEVEL       RC_SW_UP
 
-/* SWB 拨到 RC_SW_UP 时进加速档（速度 × CHASSIS_FAST_SCALE）。 */
+/* SWB 拨到 RC_SW_UP 时进高速底盘档（速度 × CHASSIS_FAST_SCALE）。
+ * SWB 下由 vehicle_control.c 切到机械臂模式，底盘不会出力。 */
 #define RC_FAST_SWITCH_LEVEL      RC_SW_UP
 
 /* ========================================================================
