@@ -57,7 +57,7 @@ void Arm2006_OnCanRx(uint32_t id, const uint8_t *data, uint8_t len)
     uint16_t encoder;
     int16_t speed_rpm;
     int32_t difference;
-    if ((id != VEHICLE_LOWER_ARM_ID) || (data == 0) || (len != 8U)) return;
+    if ((id != VEHICLE_WRIST_ID) || (data == 0) || (len != 8U)) return;
     encoder = (uint16_t)(((uint16_t)data[0] << 8U) | data[1]);
     speed_rpm = (int16_t)(((uint16_t)data[2] << 8U) | data[3]);
     if (s_encoder != 0xFFFFU)
@@ -68,12 +68,12 @@ void Arm2006_OnCanRx(uint32_t id, const uint8_t *data, uint8_t len)
     }
     s_encoder = encoder;
     s_raw_angle_rad = ((float)s_round * (float)ARM2006_ENCODER_MAX + (float)encoder) *
-                      (ARM2006_TWO_PI / (float)ARM2006_ENCODER_MAX) / VEHICLE_LOWER_ARM_GEAR_RATIO;
-    if (VEHICLE_LOWER_ARM_REVERSED != 0)
+                      (ARM2006_TWO_PI / (float)ARM2006_ENCODER_MAX) / VEHICLE_WRIST_GEAR_RATIO;
+    if (VEHICLE_WRIST_REVERSED != 0)
         s_raw_angle_rad = -s_raw_angle_rad;
     s_state.angle_rad = s_raw_angle_rad - s_zero_angle_rad;
-    s_state.velocity_rad_s = (float)speed_rpm * ARM2006_TWO_PI / 60.0f / VEHICLE_LOWER_ARM_GEAR_RATIO;
-    if (VEHICLE_LOWER_ARM_REVERSED != 0) s_state.velocity_rad_s = -s_state.velocity_rad_s;
+    s_state.velocity_rad_s = (float)speed_rpm * ARM2006_TWO_PI / 60.0f / VEHICLE_WRIST_GEAR_RATIO;
+    if (VEHICLE_WRIST_REVERSED != 0) s_state.velocity_rad_s = -s_state.velocity_rad_s;
     s_state.temperature_c = data[6];
     s_state.last_rx_ms = HAL_GetTick();
     s_state.feedback_seen = true;
@@ -95,7 +95,7 @@ void Arm2006_SetVelocity(float normalized_velocity)
 
 bool Arm2006_IsOnline(uint32_t now_ms)
 {
-    return s_state.feedback_seen && ((uint32_t)(now_ms - s_state.last_rx_ms) <= VEHICLE_LOWER_ARM_TIMEOUT_MS);
+    return s_state.feedback_seen && ((uint32_t)(now_ms - s_state.last_rx_ms) <= VEHICLE_WRIST_TIMEOUT_MS);
 }
 
 void Arm2006_Update(uint32_t now_ms, float dt_s, bool enabled)
@@ -110,49 +110,49 @@ void Arm2006_Update(uint32_t now_ms, float dt_s, bool enabled)
         return;
     }
 
-    target_velocity = s_velocity_request * VEHICLE_LOWER_ARM_MAX_RATE_RAD_S;
+    target_velocity = s_velocity_request * VEHICLE_WRIST_MAX_RATE_RAD_S;
     s_state.target_rad += target_velocity * dt_s;
-    s_state.target_rad = Vehicle_ClampF(s_state.target_rad, VEHICLE_LOWER_ARM_MIN_RAD,
-                                        VEHICLE_LOWER_ARM_MAX_RAD);
+    s_state.target_rad = Vehicle_ClampF(s_state.target_rad, VEHICLE_WRIST_MIN_RAD,
+                                        VEHICLE_WRIST_MAX_RAD);
 
     error = s_state.target_rad - s_state.angle_rad;
-    if (Vehicle_AbsF(error) <= VEHICLE_LOWER_ARM_POS_DEADBAND)
+    if (Vehicle_AbsF(error) <= VEHICLE_WRIST_POS_DEADBAND)
     {
         error = 0.0f;
     }
 
     /* 只在"摇杆回中、误差不大"时积分：把顶住重力所需的保持电流学出来；
      * 运动过程中冻结积分，避免换向时积分顶死造成冲过头。 */
-    if ((Vehicle_AbsF(target_velocity) < VEHICLE_LOWER_ARM_HOLD_VEL_RAD_S) &&
-        (Vehicle_AbsF(error) < VEHICLE_LOWER_ARM_KI_BAND_RAD))
+    if ((Vehicle_AbsF(target_velocity) < VEHICLE_WRIST_HOLD_VEL_RAD_S) &&
+        (Vehicle_AbsF(error) < VEHICLE_WRIST_KI_BAND_RAD))
     {
-        s_integral += error * VEHICLE_LOWER_ARM_KI * dt_s;
+        s_integral += error * VEHICLE_WRIST_KI * dt_s;
         s_integral = Vehicle_ClampF(s_integral,
-                                    -(float)VEHICLE_LOWER_ARM_CURRENT_MAX,
-                                    (float)VEHICLE_LOWER_ARM_CURRENT_MAX);
+                                    -(float)VEHICLE_WRIST_CURRENT_MAX,
+                                    (float)VEHICLE_WRIST_CURRENT_MAX);
     }
     else
     {
         s_integral = Vehicle_SlewF(s_integral, 0.0f,
-                                   VEHICLE_LOWER_ARM_CURRENT_SLEW, dt_s);
+                                   VEHICLE_WRIST_CURRENT_SLEW, dt_s);
     }
 
-    output = error * VEHICLE_LOWER_ARM_KP
+    output = error * VEHICLE_WRIST_KP
            + s_integral
-           + VEHICLE_LOWER_ARM_GRAVITY_FF
-           + VEHICLE_LOWER_ARM_KD * (target_velocity - s_state.velocity_rad_s);
+           + VEHICLE_WRIST_GRAVITY_FF
+           + VEHICLE_WRIST_KD * (target_velocity - s_state.velocity_rad_s);
 
     output = Vehicle_ClampF(output,
-                            -(float)VEHICLE_LOWER_ARM_CURRENT_MAX,
-                            (float)VEHICLE_LOWER_ARM_CURRENT_MAX);
+                            -(float)VEHICLE_WRIST_CURRENT_MAX,
+                            (float)VEHICLE_WRIST_CURRENT_MAX);
     /* 电流变化率限幅：软启动，同时压掉 P 项在零附近的抖振。 */
     output = Vehicle_SlewF((float)s_last_command, output,
-                           VEHICLE_LOWER_ARM_CURRENT_SLEW, dt_s);
+                           VEHICLE_WRIST_CURRENT_SLEW, dt_s);
 
     s_state.current_command = (int16_t)output;
     s_last_command = s_state.current_command;
     /* 控制环跑 1kHz，电流帧没必要跟着 1kHz 发：250Hz 足够，把总线让给 0x200。 */
-    if ((uint32_t)(now_ms - s_last_send_ms) >= VEHICLE_LOWER_ARM_SEND_PERIOD_MS)
+    if ((uint32_t)(now_ms - s_last_send_ms) >= VEHICLE_WRIST_SEND_PERIOD_MS)
     {
         s_last_send_ms = now_ms;
         Arm2006_SendCurrent(s_state.current_command);

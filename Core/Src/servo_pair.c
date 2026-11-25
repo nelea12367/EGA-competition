@@ -15,25 +15,25 @@ static uint16_t ServoMap(float degree, float min_deg, float max_deg, uint16_t mi
     return (uint16_t)((float)min_us + fraction * (float)(max_us - min_us));
 }
 
-static uint16_t s_wrist_applied;
+static uint16_t s_lower_arm_applied;
 static uint16_t s_gripper_applied;
 static bool s_applied_valid;
 
 static void ServoApply(void)
 {
-    s_state.wrist_command_us = Vehicle_ClampF(s_state.wrist_command_us,
+    s_state.lower_arm_command_us = Vehicle_ClampF(s_state.lower_arm_command_us,
                                                (float)VEHICLE_LOWER_ARM_SERVO_MIN_US,
                                                (float)VEHICLE_LOWER_ARM_SERVO_MAX_US);
-    s_state.wrist_us = (uint16_t)(s_state.wrist_command_us + 0.5f);
+    s_state.lower_arm_us = (uint16_t)(s_state.lower_arm_command_us + 0.5f);
     s_state.gripper_us = ServoMap(s_state.gripper_deg, VEHICLE_GRIPPER_MIN_DEG, VEHICLE_GRIPPER_MAX_DEG,
                                   VEHICLE_GRIPPER_MIN_US, VEHICLE_GRIPPER_MAX_US);
 
     /* 只在数值真的变了才写 CCR：CCR 没有预装载，运行中改写会在当前周期
      * 截断/延长脉冲，白白给舵机灌几微秒的抖动。 */
-    if ((!s_applied_valid) || (s_wrist_applied != s_state.wrist_us))
+    if ((!s_applied_valid) || (s_lower_arm_applied != s_state.lower_arm_us))
     {
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, s_state.wrist_us);
-        s_wrist_applied = s_state.wrist_us;
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, s_state.lower_arm_us);
+        s_lower_arm_applied = s_state.lower_arm_us;
     }
     if ((!s_applied_valid) || (s_gripper_applied != s_state.gripper_us))
     {
@@ -45,17 +45,17 @@ static void ServoApply(void)
 
 void ServoPair_Init(void)
 {
-    s_state.wrist_command_us = (float)VEHICLE_LOWER_ARM_SERVO_BOOT_US;
+    s_state.lower_arm_command_us = (float)VEHICLE_LOWER_ARM_SERVO_BOOT_US;
     s_state.gripper_deg = VEHICLE_GRIPPER_NEUTRAL_DEG;
     ServoApply();
     (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 }
 
-void ServoPair_SetWristRate(float normalized_rate, float dt_s)
+void ServoPair_SetLowerArmRate(float normalized_rate, float dt_s)
 {
-    s_state.wrist_command_us = Vehicle_UpdatePulseUs(
-        s_state.wrist_command_us,
+    s_state.lower_arm_command_us = Vehicle_UpdatePulseUs(
+        s_state.lower_arm_command_us,
         normalized_rate,
         VEHICLE_LOWER_ARM_SERVO_RATE_US_S,
         dt_s,
@@ -73,7 +73,7 @@ void ServoPair_SetGripperRate(float normalized_rate, float dt_s)
 
 void ServoPair_HoldSafe(void)
 {
-    s_state.wrist_command_us = Vehicle_ClampF(s_state.wrist_command_us,
+    s_state.lower_arm_command_us = Vehicle_ClampF(s_state.lower_arm_command_us,
                                                (float)VEHICLE_LOWER_ARM_SERVO_MIN_US,
                                                (float)VEHICLE_LOWER_ARM_SERVO_MAX_US);
     s_state.gripper_deg = Vehicle_ClampF(s_state.gripper_deg, VEHICLE_GRIPPER_MIN_DEG, VEHICLE_GRIPPER_MAX_DEG);

@@ -23,3 +23,15 @@ if ($LASTEXITCODE -ne 0) { throw "host test failed" }
 & (Join-Path $PSScriptRoot "test_joint_routing.ps1")
 & (Join-Path $PSScriptRoot "test_stepper_pin_routing.ps1")
 & (Join-Path $PSScriptRoot "test_arm_safety_config.ps1")
+& (Join-Path $PSScriptRoot "test_wrist_can_independence.ps1")
+
+$independenceOut = Join-Path $PSScriptRoot "test_wrist_can_independence.exe"
+& $compiler.Source -std=c11 -Wall -Wextra -Werror `
+    (Join-Path $PSScriptRoot "test_wrist_can_independence.c") `
+    ("-I" + (Join-Path $PSScriptRoot "stubs")) `
+    ("-I" + (Join-Path $root "Core\Inc")) `
+    "-o" $independenceOut
+if ($LASTEXITCODE -ne 0) { throw "wrist CAN independence test compile failed" }
+
+& $independenceOut
+if ($LASTEXITCODE -ne 0) { throw "wrist CAN independence test failed" }

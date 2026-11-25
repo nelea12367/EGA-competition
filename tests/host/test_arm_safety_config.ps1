@@ -8,11 +8,11 @@ if ($config -notmatch '#define\s+VEHICLE_STEPPER_USE_ENA\s+0') {
     throw "ENA is physically unwired, so software enable control must stay disabled."
 }
 
-if ($config -notmatch '#define\s+VEHICLE_LOWER_ARM_KI\s+0\.0f') {
+if ($config -notmatch '#define\s+VEHICLE_WRIST_KI\s+0\.0f') {
     throw "Initial commissioning must keep the M2006 integral gain disabled."
 }
 
-if ($config -notmatch '#define\s+VEHICLE_LOWER_ARM_CURRENT_MAX\s+2500') {
+if ($config -notmatch '#define\s+VEHICLE_WRIST_CURRENT_MAX\s+2500') {
     throw "Initial commissioning must retain the conservative M2006 current limit."
 }
 
