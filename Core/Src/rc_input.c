@@ -22,6 +22,21 @@
 /* 归一化摇杆量的一阶低通系数（0 = 不滤波，1 = 完全不滤波跟随）。 */
 #define RC_ANALOG_FILTER 0.5f
 
+/*
+ * 上电自动校准摇杆中点。
+ *
+ * 实测这台接收机 CH3 的中位在 1100 左右（标准值是 992），偏了 100 多个计数，
+ * 归一化后是 +0.13，已经超过 0.08 的死区 —— 结果就是"杆在中位，大臂却一直慢慢爬"。
+ *
+ * 做法：上电后前 RC_AUTOCENTER_MS 毫秒内，只对前 RC_AUTOCENTER_CHANNELS 路
+ * 记录最小/最大值；如果这段时间里该通道几乎没动（跨度 <= RC_AUTOCENTER_MAX_SPAN），
+ * 就把 (min+max)/2 记成它的中点。跨度大的通道说明上电时被推着，保持默认值不动。
+ * 开关通道（CH5 以后）不参与，否则会把"开关停在某一端"当成中点。
+ */
+#define RC_AUTOCENTER_MS        800U
+#define RC_AUTOCENTER_CHANNELS  4U
+#define RC_AUTOCENTER_MAX_SPAN  150U
+
 typedef enum
 {
     RC_MODE_IBUS = 0,
@@ -39,10 +54,49 @@ static uint32_t s_frames_in_mode;
 uint16_t RcMin[RC_CHANNEL_COUNT];
 uint16_t RcMax[RC_CHANNEL_COUNT];
 
-static void rc_apply(const uint16_t *raw, uint8_t count, uint16_t center, float span)
+/* 自动校准出来的中点；0 = 还没校准，用调用方给的默认值。 */
+static uint16_t s_center[RC_CHANNEL_COUNT];
+static uint16_t s_center_min[RC_CHANNEL_COUNT];
+static uint16_t s_center_max[RC_CHANNEL_COUNT];
+static uint32_t s_autocenter_ms;
+static bool s_autocenter_done;
+
+static void rc_autocenter(const uint16_t *raw, uint8_t count)
 {
+    uint8_t channels = (count < RC_AUTOCENTER_CHANNELS) ? count : (uint8_t)RC_AUTOCENTER_CHANNELS;
+
+    if (s_autocenter_done) return;
+
+    if (s_autocenter_ms == 0U) s_autocenter_ms = HAL_GetTick();
+
+    for (uint8_t i = 0U; i < channels; ++i)
+    {
+        if (raw[i] < s_center_min[i]) s_center_min[i] = raw[i];
+        if (raw[i] > s_center_max[i]) s_center_max[i] = raw[i];
+    }
+
+    if ((uint32_t)(HAL_GetTick() - s_autocenter_ms) < RC_AUTOCENTER_MS) return;
+
+    for (uint8_t i = 0U; i < channels; ++i)
+    {
+        uint16_t span = (uint16_t)(s_center_max[i] - s_center_min[i]);
+
+        if (span <= RC_AUTOCENTER_MAX_SPAN)
+        {
+            s_center[i] = (uint16_t)(((uint32_t)s_center_min[i] + (uint32_t)s_center_max[i]) / 2U);
+        }
+    }
+
+    s_autocenter_done = true;
+}
+
+static void rc_apply(const uint16_t *raw, uint8_t count, uint16_t default_center, float span)
+{
+    rc_autocenter(raw, count);
+
     for (uint8_t i = 0U; i < RC_CHANNEL_COUNT; ++i)
     {
+        uint16_t center = (s_center[i] != 0U) ? s_center[i] : default_center;
         uint16_t value = (i < count) ? raw[i] : center;
         float analog = ((float)value - (float)center) / span;
 
@@ -249,7 +303,13 @@ bool Rc_Init(void)
     {
         RcMin[i] = 0xFFFFU;
         RcMax[i] = 0U;
+        s_center[i] = 0U;
+        s_center_min[i] = 0xFFFFU;
+        s_center_max[i] = 0U;
     }
+
+    s_autocenter_ms = 0U;
+    s_autocenter_done = false;
 
     s_mode = RC_MODE_SBUS;
     s_data.protocol = RC_PROTOCOL_SBUS_NORMAL;

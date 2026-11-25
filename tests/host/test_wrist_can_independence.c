@@ -6,6 +6,7 @@
 #include "arm_2006.h"
 #include "arm_stepper.h"
 #include "rc_input.h"
+#include "servo_pair.h"
 
 static RcData g_rc;
 static bool g_rc_valid;
@@ -13,6 +14,7 @@ static bool g_wrist_online;
 static uint32_t g_now;
 static ArmStepperState g_stepper;
 static Arm2006State g_wrist;
+static ServoPairState g_servo;
 static unsigned g_stepper_reference_calls;
 static unsigned g_stepper_velocity_calls;
 static unsigned g_lower_arm_servo_calls;
@@ -55,12 +57,14 @@ void ServoPair_SetLowerArmRate(float normalized_rate, float dt_s)
 }
 void ServoPair_SetGripperRate(float normalized_rate, float dt_s) { (void)normalized_rate; (void)dt_s; }
 void ServoPair_HoldSafe(void) { }
+const ServoPairState *ServoPair_GetState(void) { return &g_servo; }
 
 int main(void)
 {
     g_rc_valid = true;
-    g_rc.switch_pos[VEHICLE_CH_ENABLE] = VEHICLE_ENABLE_LEVEL;
     g_rc.switch_pos[VEHICLE_CH_MODE] = VEHICLE_ARM_MODE_LEVEL;
+    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT0] = RC_SW_UP;
+    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT1] = RC_SW_UP;
     VehicleControl_Init();
 
     g_now = 1U;

@@ -7,6 +7,7 @@
 typedef struct
 {
     bool reference_valid;
+    float angle_rad;
 } Arm2006State;
 
 void Arm2006_Init(void);

@@ -21,6 +21,22 @@ $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
+# If -Hex was not given explicitly and the default name is missing (e.g. the
+# last build used -OutName DM_MC02_Vehicle), fall back to the newest hex in
+# build\ instead of failing. Building with a different OutName and then running
+# flash.ps1 without arguments used to fail here, which looks exactly like
+# "flashed but nothing changed".
+if (-not $PSBoundParameters.ContainsKey('Hex')) {
+    if (-not (Test-Path $Hex)) {
+        $cand = Get-ChildItem "build\*.hex" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($cand) {
+            $Hex = $cand.FullName
+            Write-Host ("using newest build: " + $Hex) -ForegroundColor Yellow
+        }
+    }
+}
+
 if (-not (Test-Path $Hex)) {
     Write-Host "hex not found: $Hex" -ForegroundColor Red
     Write-Host "build first:  powershell -ExecutionPolicy Bypass -File .\build.ps1" -ForegroundColor Yellow

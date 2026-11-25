@@ -64,7 +64,7 @@ static uint32_t s_last_led_ms;
 static uint32_t s_last_debug_ms;
 
 /* 固件版本号：每次烧录递增，用 SWD 读它就能确认"板子里跑的到底是哪一版"。 */
-volatile uint32_t g_fw_version __attribute__((used)) = 5U;
+volatile uint32_t g_fw_version __attribute__((used)) = 9U;
 
 /* 调试用：CAN 收到的帧总数和最后一个 ID，用 SWD 读（0x24000xxx）。 */
 volatile uint32_t g_can_rx_count;
@@ -95,7 +95,7 @@ void SystemClock_Config(void);
 static void MPU_Config(void);
 /* USER CODE BEGIN PFP */
 
-#if (CHASSIS_LED_TEST == 0) && (CHASSIS_LED_CALIB == 0) && (CHASSIS_CAN_LIVE_LED == 0)
+#if (CHASSIS_LED_TEST == 0) && (CHASSIS_LED_CALIB == 0) && (CHASSIS_CAN_LIVE_LED == 0) && (VEHICLE_CHANNEL_PROBE == 0)
 static LedState AppLedState(const ChassisState *state);
 #endif
 #if (CHASSIS_DEBUG_PRINT != 0)
@@ -103,6 +103,9 @@ static void AppDebugPrint(const ChassisState *state, const RcData *rc);
 #endif
 #if (CHASSIS_CAN_PROBE_ON_BOOT != 0) && (CHASSIS_LED_CALIB == 0)
 static void AppShowCanProbe(void);
+#endif
+#if (VEHICLE_CHANNEL_PROBE != 0)
+static void AppShowChannelProbe(const RcData *remote, uint32_t now_ms);
 #endif
 
 /* USER CODE END PFP */
@@ -113,7 +116,7 @@ static void AppShowCanProbe(void);
 /**
   * @brief 把底盘状态翻译成一个灯色。
   */
-#if (CHASSIS_LED_TEST == 0) && (CHASSIS_LED_CALIB == 0) && (CHASSIS_CAN_LIVE_LED == 0)
+#if (CHASSIS_LED_TEST == 0) && (CHASSIS_LED_CALIB == 0) && (CHASSIS_CAN_LIVE_LED == 0) && (VEHICLE_CHANNEL_PROBE == 0)
 static LedState AppLedState(const ChassisState *state)
 {
   const VehicleControlState *vehicle = VehicleControl_GetState();
@@ -129,25 +132,19 @@ static LedState AppLedState(const ChassisState *state)
     return LED_STATE_SELF_TEST;
   }
 
-  if (!state->rc_ok)
+  /* 遥控状态直接看链路，不看 ChassisState：机械臂模式下 Chassis_Update 不跑，
+   * state->rc_ok 会是上一次底盘模式留下的旧值。 */
+  if (!Rc_IsSignalValid())
   {
     return LED_STATE_RC_LOST;
   }
 
-  /* 机械臂模式下，大臂人工零点和腕部 CAN 状态独立显示。 */
+  /* 机械臂模式：腕部 CAN 掉线才报故障。零点现在是自动建立的，没有"等回中"状态了。 */
   if (vehicle->mode == VEHICLE_MODE_ARM)
   {
-    if (!vehicle->stepper_reference_valid)
-    {
-      return LED_STATE_WAIT_CENTER;
-    }
     if (!vehicle->wrist_online)
     {
       return LED_STATE_MOTOR_FAULT;
-    }
-    if (!vehicle->wrist_reference_valid)
-    {
-      return LED_STATE_WAIT_CENTER;
     }
     return vehicle->enabled ? LED_STATE_READY : LED_STATE_LOCKED;
   }
@@ -171,10 +168,74 @@ static LedState AppLedState(const ChassisState *state)
 }
 #endif
 
+#if (VEHICLE_CHANNEL_PROBE != 0)
+/**
+  * @brief 通道自检：找出当前偏移最大的那一路，用"闪 N 下"报告它是第 N 路。
+  *
+  *   红灯闪 N 下 = 第 N 路正向推到底
+  *   绿灯闪 N 下 = 第 N 路反向推到底
+  *   暗蓝常亮   = 所有通道都在中位，或根本没收到帧
+  *
+  *   用法：把某一根杆推到顶保持住，数灯闪几下，就知道它对应 CH 几。
+  *   一根一根来，记完一张表就能反过来改 vehicle_config.h 的通道号。
+  */
+static void AppShowChannelProbe(const RcData *remote, uint32_t now_ms)
+{
+  uint8_t best = 0U;
+  float magnitude = 0.0f;
+  uint8_t blinks;
+  uint32_t period;
+  uint32_t slot;
+
+  for (uint8_t i = 0U; i < 10U; ++i)
+  {
+    float value = remote->analog[i];
+
+    if (value < 0.0f) value = -value;
+    if (value > magnitude)
+    {
+      magnitude = value;
+      best = i;
+    }
+  }
+
+  if ((!remote->frame_valid) || (magnitude < 0.25f))
+  {
+    StatusLed_SetColor(0U, 0U, 8U);
+    return;
+  }
+
+  blinks = (uint8_t)(best + 1U);
+  period = ((uint32_t)blinks * 300U) + 900U;
+  slot = now_ms % period;
+
+  if (slot < ((uint32_t)blinks * 300U))
+  {
+    bool on = ((slot % 300U) < 140U);
+
+    if (!on)
+    {
+      StatusLed_SetColor(0U, 0U, 0U);
+    }
+    else if (remote->analog[best] > 0.0f)
+    {
+      StatusLed_SetColor(40U, 0U, 0U);
+    }
+    else
+    {
+      StatusLed_SetColor(0U, 40U, 0U);
+    }
+  }
+  else
+  {
+    StatusLed_SetColor(0U, 0U, 0U);
+  }
+}
+#endif
+
 #if (CHASSIS_CAN_PROBE_ON_BOOT != 0) && (CHASSIS_LED_CALIB == 0)
 /**
   * @brief 把三路扫描结果用灯报告出来：第 1/2/3 个颜色 = FDCAN1/2/3。
-  *
   *   绿 = 收到电机反馈（这一路就是接电调的那一路）
   *   黄 = 帧发出去了，但没有任何节点应答（收发器 OK，问题在接线/供电/集线板）
   *   蓝 = 帧压根没发出去（这一路没有收发器，或引脚没接到 CAN 座）
@@ -347,7 +408,7 @@ int main(void)
     uint32_t now = HAL_GetTick();
 
     /* 让版本号变量被真正引用，避免被 --gc-sections 丢掉（SWD 要读它）。 */
-    g_fw_version = 5U;
+    g_fw_version = 9U;
 
     /* 收遥控（内部组帧 + 协议自动识别，非阻塞）。 */
     (void)Rc_Update();
@@ -439,6 +500,12 @@ int main(void)
         const RcData *remote = Rc_Get();
         uint8_t index = state->self_test_wheel;
 
+#if (VEHICLE_CHANNEL_PROBE != 0)
+        /* 通道自检固件：灯只用来报"哪一路在动"，不显示状态。 */
+        (void)state;
+        (void)index;
+        AppShowChannelProbe(remote, now);
+#else
         if (state->probe_mode)
         {
           index = state->probe_count;
@@ -476,6 +543,7 @@ int main(void)
         {
           StatusLed_Update(AppLedState(state), index, now);
         }
+#endif /* VEHICLE_CHANNEL_PROBE */
       }
 #endif
     }

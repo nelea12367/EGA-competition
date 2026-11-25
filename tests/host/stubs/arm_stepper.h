@@ -2,9 +2,11 @@
 #define TEST_ARM_STEPPER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct
 {
+    int32_t position_pulse;
     bool reference_valid;
 } ArmStepperState;
 

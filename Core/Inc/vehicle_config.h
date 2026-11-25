@@ -5,22 +5,46 @@
 #include "rc_input.h"
 
 /*
- * Receiver layout. SWB is a two-position mode selector:
- * UP = high-speed chassis, DOWN = arm mode.
- * Adjust only this file after receiver channel calibration.
+ * 遥控通道分配（实测 FS-i6X + FS-iA10B，SBUS）
+ *
+ *   SWB  CH8  : 上 = 底盘模式（安全态，机械臂就地保持）
+ *               下 = 机械臂模式
+ *   SWC  CH9  : 上 = 爪子张开   中 = 保持   下 = 爪子合拢
+ *   SWA  CH7  : 动作码 bit0（拨下 = 1）
+ *   SWD  CH10 : 动作码 bit1（拨下 = 1）
+ *   摇杆四轴  : CH3 大臂、CH4 小臂、CH1 腕部、CH2 爪子
+ *
+ * 没有单独的总使能开关：SWB 拨上就是安全态。丢掉遥控会立刻停止所有输出，
+ * 但保留大臂/腕部的零点（机械臂没动过，零点仍然有效，不用重新回中）。
  */
-#define VEHICLE_CH_ENABLE             6U
 #define VEHICLE_CH_MODE               7U /* CH8 / SWB */
-#define VEHICLE_CH_STEPPER            2U
-#define VEHICLE_CH_LOWER_ARM          3U
-#define VEHICLE_CH_WRIST              0U
-#define VEHICLE_CH_GRIPPER            8U
-#define VEHICLE_ENABLE_LEVEL          RC_SW_UP
-#define VEHICLE_ARM_MODE_LEVEL        RC_SW_DOWN /* SWB down: arm mode */
+#define VEHICLE_CH_STEPPER            2U /* CH3 左杆上下 -> 大臂（DM430 步进） */
+#define VEHICLE_CH_LOWER_ARM          3U /* CH4 左杆左右 -> 小臂（TIM1_CH1 舵机） */
+#define VEHICLE_CH_WRIST              0U /* CH1 右杆左右 -> 腕部（C610/2006） */
+#define VEHICLE_CH_GRIPPER_AXIS       1U /* CH2 右杆上下 -> 爪子（SWC 在"保持"档时才生效） */
+#define VEHICLE_CH_GRIPPER            8U /* CH9 / SWC */
+#define VEHICLE_CH_ACTION_BIT0        6U /* CH7  / SWA */
+#define VEHICLE_CH_ACTION_BIT1        9U /* CH10 / SWD */
+
+#define VEHICLE_ARM_MODE_LEVEL        RC_SW_DOWN /* SWB 下 = 机械臂模式 */
 #define VEHICLE_GRIPPER_OPEN_LEVEL    RC_SW_UP
 #define VEHICLE_GRIPPER_CLOSE_LEVEL   RC_SW_DOWN
+/* 动作码去抖：SWA/SWD 拨到位后要保持这么久才算数，防止三档开关中路过的中间位误触发。 */
+#define VEHICLE_ACTION_STABLE_MS      200U
 #define VEHICLE_REFERENCE_HOLD_MS     500U
 #define VEHICLE_RC_DEADBAND           0.08f
+
+/* 通道自检固件：1 = 灯不再显示状态，改成"闪 N 下 = 第 N 路在动"，
+ * 用来把物理摇杆/开关和 channel 号一一对上（另出一个 hex，平时保持 0）。 */
+#ifndef VEHICLE_CHANNEL_PROBE
+#define VEHICLE_CHANNEL_PROBE         0
+#endif
+
+/* 舵机扫频自检：1 = 不管遥控也不管模式，小臂和爪子每 1.5 秒来回摆到两端。
+ * 用来确认 PE09/PE13 到舵机这一段到底通不通（舵机自己就是指示器）。 */
+#ifndef VEHICLE_SERVO_SWEEP
+#define VEHICLE_SERVO_SWEEP           0
+#endif
 
 /*
  * Temporary direct DM430 interface:
@@ -37,7 +61,7 @@
 /* 步进电机"转矩随转速下降"是个硬约束：脉冲频率越高，能带动的负载越小。
  * 直驱大臂时 1000Hz 已经足够让电机在重力负载下失步（表现为"突然掉下去"）。
  * 先把上限压到 350Hz，力矩余量足够；确认不丢步后再按 100Hz 一档往上加。 */
-#define VEHICLE_STEPPER_MAX_HZ          1000.0f  /*大臂电机最大运动速度*/
+#define VEHICLE_STEPPER_MAX_HZ          350.0f  /*大臂电机最大运动速度（1000Hz 会丢步，见 README_机械臂抖动排查 第3节）*/
 /* 加/减速（脉冲频率变化率）。原来的 15000Hz/s 相当于 66ms 内从 0 冲到 1000Hz，
  * 起停太猛，步进电机在起停瞬间最容易丢步 -> 转子打滑 -> 看着像"突然掉一截"。 */
 #define VEHICLE_STEPPER_ACCEL_HZ_S      3000.0f /*大臂电机加速速度*/
@@ -83,8 +107,8 @@
  * BOOT_US 是上电后立即保持的位置；MIN/MAX 必须按实物标定，并在机械硬限位前留余量。
  * 当前 1100~1900us 只是沿用旧配置，首次带载前应先托住机械臂并收紧范围。 */
 #define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽*/
-#define VEHICLE_LOWER_ARM_SERVO_MIN_US        500U /*最小脉宽*/
-#define VEHICLE_LOWER_ARM_SERVO_MAX_US        2500U /*最大脉宽*/
+#define VEHICLE_LOWER_ARM_SERVO_MIN_US        1100U /*最小脉宽（500 会让舵机顶到机械硬限位，堵转发热）*/
+#define VEHICLE_LOWER_ARM_SERVO_MAX_US        1900U /*最大脉宽（2500 同上）*/
 #define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     622.0f
 
 #define VEHICLE_GRIPPER_MIN_DEG        0.0f
@@ -93,5 +117,51 @@
 #define VEHICLE_GRIPPER_MIN_US         1050U
 #define VEHICLE_GRIPPER_MAX_US         1950U
 #define VEHICLE_GRIPPER_RATE_DEG_S     200.0f /* 原来是 90，开合 60° 要走 0.67s，看起来像"延迟" */
+
+/* ========================================================================
+ * 机械臂预设动作（SWA + SWD 两位二进制）
+ *
+ *   小臂两种状态 × 腕部两种状态 = 4 个组合
+ *
+ *   bit0 = SWA：上 = 小臂 A 位，下 = 小臂 B 位
+ *   bit1 = SWD：上 = 腕部 A 位，下 = 腕部 B 位
+ *
+ *   00  SWA上 SWD上  ->  小臂A + 腕A
+ *   01  SWA下 SWD上  ->  小臂B + 腕A
+ *   10  SWA上 SWD下  ->  小臂A + 腕B
+ *   11  SWA下 SWD下  ->  小臂B + 腕B
+ *
+ * 大臂和爪子不参与预设：大臂永远跟 CH3 摇杆、爪子跟 SWC/CH2，
+ * 所以切模式时不会有"大臂自己慢慢爬"的现象。
+ *
+ * 拨到某个组合后，小臂和腕部一起走到对应位置并保持。
+ * 只要动对应摇杆超过死区，就立刻退出预设、切成手动跟随，
+ * 直到重新拨动 SWA/SWD（拨到别的组合再拨回来）才会再次执行。
+ *
+ * ⚠ 下面四个姿态是**占位值**，必须按你的机构实测后替换：
+ *     lower_arm_us : 小臂舵机脉宽，范围 VEHICLE_LOWER_ARM_SERVO_MIN/MAX_US
+ *     wrist_rad    : 腕部弧度，相对零点，范围 VEHICLE_WRIST_MIN/MAX_RAD
+ * ======================================================================*/
+typedef struct
+{
+    float lower_arm_us;
+    float wrist_rad;
+} VehiclePose;
+
+#define VEHICLE_POSE_COUNT 4U
+
+#define VEHICLE_POSE_TABLE                              \
+{                                                       \
+    /* 00 小臂A + 腕A */ { 1500.0f,  0.00f },           \
+    /* 01 小臂B + 腕A */ { 1700.0f,  0.00f },           \
+    /* 10 小臂A + 腕B */ { 1500.0f,  0.60f },           \
+    /* 11 小臂B + 腕B */ { 1700.0f,  0.60f }            \
+}
+
+/* 到位速度：误差 / FULL = 归一化速度，超过 1 截断；误差小于 DEADBAND 就停。 */
+#define VEHICLE_POSE_WRIST_FULL_RAD         0.50f
+#define VEHICLE_POSE_WRIST_DEADBAND         0.02f
+#define VEHICLE_POSE_SERVO_FULL_US        200.0f
+#define VEHICLE_POSE_SERVO_DEADBAND        10.0f
 
 #endif /* VEHICLE_CONFIG_H */
