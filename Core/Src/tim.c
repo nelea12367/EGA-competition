@@ -28,7 +28,7 @@
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
-/* TIM1 CH1 on PE9 and CH3 on PE13: 50 Hz PWM for wrist and gripper servos. */
+/* TIM1 CH1 on PE9 and CH3 on PE13: 50 Hz PWM for lower-arm and gripper servos. */
 void MX_TIM1_Init(void)
 {
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
@@ -115,7 +115,7 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef* timHandle)
   {
     __HAL_RCC_GPIOE_CLK_ENABLE();
     /**TIM1 GPIO Configuration
-    PE9  ------> TIM1_CH1 (wrist PWM)
+    PE9  ------> TIM1_CH1 (lower-arm PWM)
     PE13 ------> TIM1_CH3 (gripper PWM)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_13;

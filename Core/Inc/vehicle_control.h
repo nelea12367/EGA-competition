@@ -14,8 +14,9 @@ typedef struct
 {
     VehicleMode mode;
     bool enabled;
-    bool reference_valid;
-    bool lower_arm_online;
+    bool stepper_reference_valid;
+    bool wrist_reference_valid;
+    bool wrist_online;
 } VehicleControlState;
 
 void VehicleControl_Init(void);

@@ -134,14 +134,18 @@ static LedState AppLedState(const ChassisState *state)
     return LED_STATE_RC_LOST;
   }
 
-  /* In arm mode, lower-arm feedback and manual reference replace the wheel checks. */
+  /* 机械臂模式下，大臂人工零点和腕部 CAN 状态独立显示。 */
   if (vehicle->mode == VEHICLE_MODE_ARM)
   {
-    if (!vehicle->lower_arm_online)
+    if (!vehicle->stepper_reference_valid)
+    {
+      return LED_STATE_WAIT_CENTER;
+    }
+    if (!vehicle->wrist_online)
     {
       return LED_STATE_MOTOR_FAULT;
     }
-    if (!vehicle->reference_valid)
+    if (!vehicle->wrist_reference_valid)
     {
       return LED_STATE_WAIT_CENTER;
     }

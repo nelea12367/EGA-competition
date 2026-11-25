@@ -7,7 +7,7 @@ if ($source -notmatch 'Arm2006_SetVelocity\(VehicleAxis\(rc, VEHICLE_CH_WRIST\)\
     throw "The CAN motor must receive the wrist control channel."
 }
 
-if ($source -notmatch 'ServoPair_SetWristRate\(VehicleAxis\(rc, VEHICLE_CH_LOWER_ARM\), dt_s\);') {
+if ($source -notmatch 'ServoPair_SetLowerArmRate\(VehicleAxis\(rc, VEHICLE_CH_LOWER_ARM\), dt_s\);') {
     throw "The PWM servo must receive the lower-arm control channel."
 }
 

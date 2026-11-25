@@ -5,14 +5,14 @@
 
 typedef struct
 {
-    float wrist_command_us;
+    float lower_arm_command_us;
     float gripper_deg;
-    uint16_t wrist_us;
+    uint16_t lower_arm_us;
     uint16_t gripper_us;
 } ServoPairState;
 
 void ServoPair_Init(void);
-void ServoPair_SetWristRate(float normalized_rate, float dt_s);
+void ServoPair_SetLowerArmRate(float normalized_rate, float dt_s);
 void ServoPair_SetGripperRate(float normalized_rate, float dt_s);
 void ServoPair_HoldSafe(void);
 const ServoPairState *ServoPair_GetState(void);
