@@ -60,12 +60,17 @@
 #define VEHICLE_STEPPER_MAX_PULSE       12000
 /* 步进电机"转矩随转速下降"是个硬约束：脉冲频率越高，能带动的负载越小。
  * 直驱大臂时 1000Hz 已经足够让电机在重力负载下失步（表现为"突然掉下去"）。
- * 先把上限压到 350Hz，力矩余量足够；确认不丢步后再按 100Hz 一档往上加。 */
-#define VEHICLE_STEPPER_MAX_HZ          350.0f  /*大臂电机最大运动速度（1000Hz 会丢步，见 README_机械臂抖动排查 第3节）*/
-/* 加/减速（脉冲频率变化率）。原来的 15000Hz/s 相当于 66ms 内从 0 冲到 1000Hz，
- * 起停太猛，步进电机在起停瞬间最容易丢步 -> 转子打滑 -> 看着像"突然掉一截"。 */
-#define VEHICLE_STEPPER_ACCEL_HZ_S      3000.0f /*大臂电机加速速度*/
-#define VEHICLE_STEPPER_DECEL_HZ_S      3000.0f /*大臂电机减速速度*/
+ *
+ * 速度换算（1.8° 步距角）：
+ *   350Hz @1/8细分 ≈  79°/s；@1/16细分 ≈ 39°/s   ← 之前，偏慢
+ *   700Hz @1/8细分 ≈ 158°/s；@1/16细分 ≈ 79°/s   ← 现在
+ * 如果换成 700Hz 后出现"一推就掉一截"，说明当前细分/电流下带不动，
+ * 按 600 → 500 → 400 往下退，或者把 DM430 的工作电流拨码调大。 */
+#define VEHICLE_STEPPER_MAX_HZ          700.0f  /*大臂电机最大运动速度*/
+/* 加/减速（脉冲频率变化率）。700Hz 用 8000Hz/s 约 88ms 到满速，
+ * 起停不至于太猛，也不会让人觉得"要等半秒才走"。 */
+#define VEHICLE_STEPPER_ACCEL_HZ_S      8000.0f /*大臂电机加速速度*/
+#define VEHICLE_STEPPER_DECEL_HZ_S      4000.0f /*大臂电机减速速度（减速留余量，避免丢步）*/
 #define VEHICLE_STEPPER_DIR_POSITIVE    1
 /* ENA 目前物理上悬空，软件写 PE14 不会影响 DM430；保持为 0，避免误以为
  * 代码可以控制驱动器使能。实际接通 ENA 后再改为 1，并核实有效电平。 */
@@ -96,12 +101,16 @@
 #define VEHICLE_WRIST_KI                     0.0f     /* 首次上机先关闭积分；PD 稳定后再逐步整定。 */
 #define VEHICLE_WRIST_KI_BAND_RAD            0.25f   /* 误差超过这个范围不积分，避免换向顶死 */
 #define VEHICLE_WRIST_HOLD_VEL_RAD_S         0.05f   /* 目标速度低于它才算"停住保持" */
-#define VEHICLE_WRIST_POS_DEADBAND           0.008f  /* 位置死区，约 0.46°，吃掉编码器/齿隙抖动 */
+#define VEHICLE_WRIST_POS_DEADBAND           0.002f  /* 位置死区约 0.11°。原来 0.008(0.46°) 太大：
+                                                      * 没有积分项时，臂会在死区里被重力压下去、
+                                                      * 再被 P 顶回来，表现为"一顿一顿"的卡顿。 */
 #define VEHICLE_WRIST_GRAVITY_FF             0.0f    /* 重力前馈（原始电流），正负看实测，见 README */
 #define VEHICLE_WRIST_CURRENT_MAX            2500    /* 首次上机保守限流；确认方向、抖动和温升后再上调。 */
 #define VEHICLE_WRIST_CURRENT_SLEW           60000.0f /* 原始电流/秒，软启动 + 抑制电流突变 */
-/* PID 按 1kHz 跑，但 0x1FF 不必跟着 1kHz 发：250Hz 就够，省总线给 0x200。 */
-#define VEHICLE_WRIST_SEND_PERIOD_MS         4U
+/* 速度反馈低通：ESC 回传的 rpm 本身带量化噪声，直接进 D 项会把噪声放大成电流抖动。 */
+#define VEHICLE_WRIST_VEL_FILTER             0.30f
+/* PID 按 1kHz 跑；0x1FF 发 500Hz（2ms）已经足够平滑，再高只是占总线。 */
+#define VEHICLE_WRIST_SEND_PERIOD_MS         2U
 
 /* TIM1_CH1 小臂舵机直接使用脉宽控制，不再经过“角度 -> 脉宽”映射。
  * BOOT_US 是上电后立即保持的位置；MIN/MAX 必须按实物标定，并在机械硬限位前留余量。

@@ -64,7 +64,7 @@ static uint32_t s_last_led_ms;
 static uint32_t s_last_debug_ms;
 
 /* 固件版本号：每次烧录递增，用 SWD 读它就能确认"板子里跑的到底是哪一版"。 */
-volatile uint32_t g_fw_version __attribute__((used)) = 9U;
+volatile uint32_t g_fw_version __attribute__((used)) = 10U;
 
 /* 调试用：CAN 收到的帧总数和最后一个 ID，用 SWD 读（0x24000xxx）。 */
 volatile uint32_t g_can_rx_count;
@@ -408,7 +408,7 @@ int main(void)
     uint32_t now = HAL_GetTick();
 
     /* 让版本号变量被真正引用，避免被 --gc-sections 丢掉（SWD 要读它）。 */
-    g_fw_version = 9U;
+    g_fw_version = 10U;
 
     /* 收遥控（内部组帧 + 协议自动识别，非阻塞）。 */
     (void)Rc_Update();

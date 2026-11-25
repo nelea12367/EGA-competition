@@ -16,18 +16,27 @@ static float s_raw_angle_rad;
 static float s_zero_angle_rad;
 static float s_velocity_request;
 static float s_integral;          /* 保持电流积分项（原始电流单位） */
+static float s_velocity_filt;     /* 低通后的速度反馈，只给 D 项用 */
 static int16_t s_last_command = 0;        /* 上一拍算出来的电流（用于斜率限幅） */
 static int16_t s_tx_command = 0;          /* 真正发出去的电流（用于停止判断） */
 static bool s_command_sent = false;
 static uint32_t s_last_send_ms = 0U;
 
-static void Arm2006_SendCurrent(int16_t current)
+/* 返回 false = 这一帧没发出去（TX FIFO 满 / 总线忙），调用方下一拍重试。
+ * 不重试的话电流会停在上一帧的值上，表现出来就是腕部"一顿一顿"地卡。 */
+static bool Arm2006_SendCurrent(int16_t current)
 {
     uint8_t data[8];
+
     Vehicle_PackCurrentFrame(current, 0, 0, 0, data);
-    (void)Can_Send(ARM2006_TX_ID, data, 8U);
+    if (!Can_Send(ARM2006_TX_ID, data, 8U))
+    {
+        return false;
+    }
+
     s_tx_command = current;
     s_command_sent = true;
+    return true;
 }
 
 void Arm2006_Init(void)
@@ -46,9 +55,10 @@ void Arm2006_Init(void)
     s_zero_angle_rad = 0.0f;
     s_velocity_request = 0.0f;
     s_integral = 0.0f;
+    s_velocity_filt = 0.0f;
     s_last_command = 0;
     s_command_sent = false;
-    Arm2006_SendCurrent(0);
+    (void)Arm2006_SendCurrent(0);
     s_command_sent = true;
 }
 
@@ -74,6 +84,7 @@ void Arm2006_OnCanRx(uint32_t id, const uint8_t *data, uint8_t len)
     s_state.angle_rad = s_raw_angle_rad - s_zero_angle_rad;
     s_state.velocity_rad_s = (float)speed_rpm * ARM2006_TWO_PI / 60.0f / VEHICLE_WRIST_GEAR_RATIO;
     if (VEHICLE_WRIST_REVERSED != 0) s_state.velocity_rad_s = -s_state.velocity_rad_s;
+    s_velocity_filt += VEHICLE_WRIST_VEL_FILTER * (s_state.velocity_rad_s - s_velocity_filt);
     s_state.temperature_c = data[6];
     s_state.last_rx_ms = HAL_GetTick();
     s_state.feedback_seen = true;
@@ -140,7 +151,7 @@ void Arm2006_Update(uint32_t now_ms, float dt_s, bool enabled)
     output = error * VEHICLE_WRIST_KP
            + s_integral
            + VEHICLE_WRIST_GRAVITY_FF
-           + VEHICLE_WRIST_KD * (target_velocity - s_state.velocity_rad_s);
+           + VEHICLE_WRIST_KD * (target_velocity - s_velocity_filt);
 
     output = Vehicle_ClampF(output,
                             -(float)VEHICLE_WRIST_CURRENT_MAX,
@@ -151,11 +162,14 @@ void Arm2006_Update(uint32_t now_ms, float dt_s, bool enabled)
 
     s_state.current_command = (int16_t)output;
     s_last_command = s_state.current_command;
-    /* 控制环跑 1kHz，电流帧没必要跟着 1kHz 发：250Hz 足够，把总线让给 0x200。 */
+    /* 控制环跑 1kHz，电流帧发 500Hz；**发成功才推进时间戳**，
+     * 失败的话下一拍立刻重试，不会让指令停在旧电流上。 */
     if ((uint32_t)(now_ms - s_last_send_ms) >= VEHICLE_WRIST_SEND_PERIOD_MS)
     {
-        s_last_send_ms = now_ms;
-        Arm2006_SendCurrent(s_state.current_command);
+        if (Arm2006_SendCurrent(s_state.current_command))
+        {
+            s_last_send_ms = now_ms;
+        }
     }
 }
 
@@ -172,7 +186,7 @@ void Arm2006_Stop(void)
         return;
     }
     s_last_command = 0;
-    Arm2006_SendCurrent(0);
+    (void)Arm2006_SendCurrent(0);
 }
 
 const Arm2006State *Arm2006_GetState(void)
