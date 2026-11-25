@@ -64,6 +64,18 @@ void ServoPair_SetLowerArmRate(float normalized_rate, float dt_s)
     ServoApply();
 }
 
+void ServoPair_SetLowerArmTargetUs(uint16_t target_us, float dt_s)
+{
+    float bounded = Vehicle_ClampF((float)target_us,
+                                   (float)VEHICLE_LOWER_ARM_SERVO_MIN_US,
+                                   (float)VEHICLE_LOWER_ARM_SERVO_MAX_US);
+    s_state.lower_arm_command_us = Vehicle_SlewF(s_state.lower_arm_command_us,
+                                                  bounded,
+                                                  VEHICLE_LOWER_ARM_SERVO_RATE_US_S,
+                                                  dt_s);
+    ServoApply();
+}
+
 void ServoPair_SetGripperRate(float normalized_rate, float dt_s)
 {
     float next = s_state.gripper_deg + Vehicle_ClampF(normalized_rate, -1.0f, 1.0f) * VEHICLE_GRIPPER_RATE_DEG_S * dt_s;
@@ -84,3 +96,4 @@ const ServoPairState *ServoPair_GetState(void)
 {
     return &s_state;
 }
+
