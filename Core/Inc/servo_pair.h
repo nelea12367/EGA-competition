@@ -13,6 +13,7 @@ typedef struct
 
 void ServoPair_Init(void);
 void ServoPair_SetLowerArmRate(float normalized_rate, float dt_s);
+void ServoPair_SetLowerArmTargetUs(uint16_t target_us, float dt_s);
 void ServoPair_SetGripperRate(float normalized_rate, float dt_s);
 void ServoPair_HoldSafe(void);
 const ServoPairState *ServoPair_GetState(void);
