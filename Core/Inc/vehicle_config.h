@@ -5,22 +5,23 @@
 #include "rc_input.h"
 
 /*
- * Receiver layout. SWB is a two-position mode selector:
- * UP = high-speed chassis, DOWN = arm mode.
- * Adjust only this file after receiver channel calibration.
+ * Receiver layout. The channel numbers are iBUS/SBUS zero-based indexes and
+ * must be confirmed against the transmitter's channel assignment screen.
+ * SWA/SWD form a two-bit fixed-pose selector, SWB controls the gripper, and
+ * SWC selects enabled / hold / return-to-zero behavior.
  */
-#define VEHICLE_CH_ENABLE             6U
-#define VEHICLE_CH_MODE               7U /* CH8 / SWB */
-#define VEHICLE_CH_STEPPER            2U
-#define VEHICLE_CH_LOWER_ARM          3U
-#define VEHICLE_CH_WRIST              0U
-#define VEHICLE_CH_GRIPPER            8U
-#define VEHICLE_ENABLE_LEVEL          RC_SW_UP
-#define VEHICLE_ARM_MODE_LEVEL        RC_SW_DOWN /* SWB down: arm mode */
+#define VEHICLE_CH_SWA                6U
+#define VEHICLE_CH_SWB                7U
+#define VEHICLE_CH_SWC                8U
+#define VEHICLE_CH_SWD                9U
+#define VEHICLE_SWA_UP_LEVEL          RC_SW_UP
+#define VEHICLE_SWD_UP_LEVEL          RC_SW_UP
+#define VEHICLE_SWC_ENABLE_LEVEL      RC_SW_UP
+#define VEHICLE_SWC_HOLD_LEVEL        RC_SW_MID
+#define VEHICLE_SWC_RESET_LEVEL       RC_SW_DOWN
 #define VEHICLE_GRIPPER_OPEN_LEVEL    RC_SW_UP
 #define VEHICLE_GRIPPER_CLOSE_LEVEL   RC_SW_DOWN
 #define VEHICLE_REFERENCE_HOLD_MS     500U
-#define VEHICLE_RC_DEADBAND           0.08f
 
 /*
  * Temporary direct DM430 interface:
@@ -83,9 +84,25 @@
  * BOOT_US 是上电后立即保持的位置；MIN/MAX 必须按实物标定，并在机械硬限位前留余量。
  * 当前 1100~1900us 只是沿用旧配置，首次带载前应先托住机械臂并收紧范围。 */
 #define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽*/
+#define VEHICLE_LOWER_ARM_SERVO_ZERO_US       1500U /*小臂标定零位脉宽*/
 #define VEHICLE_LOWER_ARM_SERVO_MIN_US        500U /*最小脉宽*/
 #define VEHICLE_LOWER_ARM_SERVO_MAX_US        2500U /*最大脉宽*/
 #define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     622.0f
+
+/* Four fixed poses, all initially set to the mechanically safe zero pose.
+ * Replace one complete row at a time after hardware calibration. */
+#define VEHICLE_PRESET_0_STEPPER_PULSE        0  /*大臂相对人工零位的脉冲数*/
+#define VEHICLE_PRESET_0_LOWER_ARM_US         1700U /*小臂舵机的 PWM 脉宽*/
+#define VEHICLE_PRESET_0_WRIST_RAD            0.0f /*M2006 减速输出轴相对人工零位的角度*/
+#define VEHICLE_PRESET_1_STEPPER_PULSE        100
+#define VEHICLE_PRESET_1_LOWER_ARM_US         1500U
+#define VEHICLE_PRESET_1_WRIST_RAD            3.0f
+#define VEHICLE_PRESET_2_STEPPER_PULSE        0
+#define VEHICLE_PRESET_2_LOWER_ARM_US         1200U
+#define VEHICLE_PRESET_2_WRIST_RAD            .0f
+#define VEHICLE_PRESET_3_STEPPER_PULSE        0
+#define VEHICLE_PRESET_3_LOWER_ARM_US         2500U
+#define VEHICLE_PRESET_3_WRIST_RAD            0.0f
 
 #define VEHICLE_GRIPPER_MIN_DEG        0.0f
 #define VEHICLE_GRIPPER_MAX_DEG        60.0f
@@ -95,3 +112,4 @@
 #define VEHICLE_GRIPPER_RATE_DEG_S     200.0f /* 原来是 90，开合 60° 要走 0.67s，看起来像"延迟" */
 
 #endif /* VEHICLE_CONFIG_H */
+
