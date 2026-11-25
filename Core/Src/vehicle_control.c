@@ -2,56 +2,91 @@
 
 #include "main.h"
 #include "arm_2006.h"
+#include "arm_presets.h"
 #include "arm_stepper.h"
 #include "chassis.h"
 #include "rc_input.h"
 #include "servo_pair.h"
 #include "vehicle_config.h"
-#include "vehicle_math.h"
 
 static VehicleControlState s_state;
 static uint32_t s_last_ms;
-static uint32_t s_stepper_reference_since_ms;
-static uint32_t s_wrist_reference_since_ms;
+static uint32_t s_reference_since_ms;
+static uint8_t s_last_swc;
 
-static float VehicleAxis(const RcData *rc, uint8_t channel)
+static void VehicleApplyPose(const ArmPreset *pose, uint32_t now_ms, float dt_s)
 {
-    float value = rc->analog[channel];
-    if (Vehicle_AbsF(value) <= VEHICLE_RC_DEADBAND) return 0.0f;
-    return value;
+    ArmStepper_SetTargetPulse(pose->stepper_pulse, true, dt_s);
+    Arm2006_SetTargetRad(pose->wrist_rad);
+    Arm2006_Update(now_ms, dt_s, true);
+    ServoPair_SetLowerArmTargetUs(pose->lower_arm_us, dt_s);
 }
 
-static bool VehicleInputsCentered(const RcData *rc)
+static void VehicleHoldPose(uint32_t now_ms, float dt_s, bool entered)
 {
-    return (VehicleAxis(rc, VEHICLE_CH_STEPPER) == 0.0f) &&
-           (VehicleAxis(rc, VEHICLE_CH_LOWER_ARM) == 0.0f) &&
-           (VehicleAxis(rc, VEHICLE_CH_WRIST) == 0.0f);
-}
-
-/* 软停步进：保持驱动器通电，按减速斜率把脉冲频率降到 0 再断脉冲。
- * 硬停（直接切 PWM）在几百 Hz 上会让电机动丢步，大臂"啪"掉一截就是这么来的。 */
-static void StepperSoftStop(float dt_s)
-{
-    if (ArmStepper_GetState()->reference_valid)
+    if (entered)
     {
-        ArmStepper_SetVelocity(0.0f, true, dt_s);
+        ArmStepper_HoldCurrentPosition();
+        Arm2006_HoldCurrentPosition();
     }
-    else
+    Arm2006_Update(now_ms, dt_s, true);
+    ServoPair_HoldSafe();
+}
+
+static bool VehicleCaptureReference(uint32_t now_ms)
+{
+    if (!s_state.wrist_online)
+    {
+        s_reference_since_ms = 0U;
+        ArmStepper_Stop();
+        Arm2006_Stop();
+        return false;
+    }
+
+    if (s_reference_since_ms == 0U) s_reference_since_ms = now_ms;
+    if ((uint32_t)(now_ms - s_reference_since_ms) < VEHICLE_REFERENCE_HOLD_MS)
     {
         ArmStepper_Stop();
+        Arm2006_Stop();
+        return false;
     }
+
+    if (!s_state.stepper_reference_valid)
+    {
+        ArmStepper_SetReference();
+        s_state.stepper_reference_valid = ArmStepper_GetState()->reference_valid;
+    }
+    if (!s_state.wrist_reference_valid)
+    {
+        Arm2006_SetReference();
+        s_state.wrist_reference_valid = Arm2006_GetState()->reference_valid;
+    }
+    return s_state.stepper_reference_valid && s_state.wrist_reference_valid;
+}
+
+static void VehicleUpdateGripper(const RcData *rc, float dt_s)
+{
+    if (rc->switch_pos[VEHICLE_CH_SWB] == VEHICLE_GRIPPER_OPEN_LEVEL)
+        ServoPair_SetGripperRate(1.0f, dt_s);
+    else if (rc->switch_pos[VEHICLE_CH_SWB] == VEHICLE_GRIPPER_CLOSE_LEVEL)
+        ServoPair_SetGripperRate(-1.0f, dt_s);
+    else
+        ServoPair_HoldSafe();
 }
 
 void VehicleControl_Init(void)
 {
-    s_state.mode = VEHICLE_MODE_DRIVE;
+    s_state.mode = VEHICLE_MODE_ARM;
     s_state.enabled = false;
     s_state.stepper_reference_valid = false;
     s_state.wrist_reference_valid = false;
     s_state.wrist_online = false;
+    s_state.holding = true;
+    s_state.returning_zero = false;
+    s_state.active_preset = 0U;
     s_last_ms = HAL_GetTick();
-    s_stepper_reference_since_ms = 0U;
-    s_wrist_reference_since_ms = 0U;
+    s_reference_since_ms = 0U;
+    s_last_swc = 0xFFU;
     ArmStepper_Init();
     Arm2006_Init();
     ServoPair_Init();
@@ -71,124 +106,90 @@ void VehicleControl_ForceStop(void)
     s_state.enabled = false;
     s_state.stepper_reference_valid = false;
     s_state.wrist_reference_valid = false;
-    s_stepper_reference_since_ms = 0U;
-    s_wrist_reference_since_ms = 0U;
+    s_state.holding = true;
+    s_state.returning_zero = false;
+    s_reference_since_ms = 0U;
 }
 
 void VehicleControl_Update(uint32_t now_ms)
 {
     const RcData *rc = Rc_Get();
     float dt_s = (float)(uint32_t)(now_ms - s_last_ms) * 0.001f;
-    bool link_ok = Rc_IsSignalValid();
-    bool enabled;
+    uint8_t swc;
+    bool entered;
 
     if (dt_s <= 0.0f) return;
     if (dt_s > 0.05f) dt_s = 0.05f;
     s_last_ms = now_ms;
-
-    s_state.mode = (rc->switch_pos[VEHICLE_CH_MODE] == VEHICLE_ARM_MODE_LEVEL) ?
-                   VEHICLE_MODE_ARM : VEHICLE_MODE_DRIVE;
-    enabled = link_ok && (rc->switch_pos[VEHICLE_CH_ENABLE] == VEHICLE_ENABLE_LEVEL);
-    s_state.enabled = enabled;
+    s_state.mode = VEHICLE_MODE_ARM;
     s_state.wrist_online = Arm2006_IsOnline(now_ms);
 
-    if (!enabled)
+    if (!Rc_IsSignalValid())
     {
         VehicleControl_ForceStop();
         return;
     }
 
-    if (s_state.mode == VEHICLE_MODE_DRIVE)
+    Chassis_ForceStop();
+    VehicleUpdateGripper(rc, dt_s);
+    swc = rc->switch_pos[VEHICLE_CH_SWC];
+    entered = (swc != s_last_swc);
+    s_last_swc = swc;
+
+    if (swc == VEHICLE_SWC_ENABLE_LEVEL)
     {
-        /* 底盘模式下机械臂就地"抱死"：步进保持通电、腕部继续跑位置环。
-         * 原来这里直接把 2006 电流清零，一切到跑车模式腕就自由落体。 */
-#if (VEHICLE_HOLD_ARM_IN_DRIVE != 0)
-        StepperSoftStop(dt_s);
-        if (s_state.wrist_reference_valid)
+        s_state.enabled = true;
+        s_state.holding = false;
+        s_state.returning_zero = false;
+        if (!s_state.stepper_reference_valid || !s_state.wrist_reference_valid)
         {
-            Arm2006_SetVelocity(0.0f);
-            Arm2006_Update(now_ms, dt_s, true);
+            (void)VehicleCaptureReference(now_ms);
+            return;
         }
-        else
-        {
-            Arm2006_Stop();
-        }
-#else
-        ArmStepper_Stop();
-        Arm2006_Stop();
-#endif
-        ServoPair_HoldSafe();
-        Chassis_Update(now_ms);
+
+        s_state.active_preset = ArmPreset_DecodeIndex(
+            rc->switch_pos[VEHICLE_CH_SWA] == VEHICLE_SWA_UP_LEVEL,
+            rc->switch_pos[VEHICLE_CH_SWD] == VEHICLE_SWD_UP_LEVEL);
+        VehicleApplyPose(ArmPreset_Get(s_state.active_preset), now_ms, dt_s);
         return;
     }
 
-    /* Arm mode always wins: a mode change must not leave wheel current active. */
-    Chassis_ForceStop();
-
-    /* 大臂的人工零点只由遥控回中确认，不依赖腕部 CAN。 */
-    if (!s_state.stepper_reference_valid)
+    s_state.enabled = true;
+    if (swc == VEHICLE_SWC_HOLD_LEVEL)
     {
-        ArmStepper_Stop();
-        if (VehicleInputsCentered(rc))
-        {
-            if (s_stepper_reference_since_ms == 0U) s_stepper_reference_since_ms = now_ms;
-            if ((uint32_t)(now_ms - s_stepper_reference_since_ms) >= VEHICLE_REFERENCE_HOLD_MS)
-            {
-                ArmStepper_SetReference();
-                s_state.stepper_reference_valid = ArmStepper_GetState()->reference_valid;
-            }
-        }
+        s_state.holding = true;
+        s_state.returning_zero = false;
+        if (s_state.stepper_reference_valid && s_state.wrist_reference_valid)
+            VehicleHoldPose(now_ms, dt_s, entered);
         else
         {
-            s_stepper_reference_since_ms = 0U;
+            ArmStepper_Stop();
+            Arm2006_Stop();
         }
+        return;
     }
 
-    /* 腕部 CAN 轴单独建零、单独保护；掉线不能阻断其它关节。 */
-    if (!s_state.wrist_reference_valid)
+    if (swc == VEHICLE_SWC_RESET_LEVEL)
     {
-        Arm2006_Stop();
-        if (s_state.wrist_online && (VehicleAxis(rc, VEHICLE_CH_WRIST) == 0.0f))
-        {
-            if (s_wrist_reference_since_ms == 0U) s_wrist_reference_since_ms = now_ms;
-            if ((uint32_t)(now_ms - s_wrist_reference_since_ms) >= VEHICLE_REFERENCE_HOLD_MS)
-            {
-                Arm2006_SetReference();
-                s_state.wrist_reference_valid = Arm2006_GetState()->reference_valid;
-            }
-        }
+        s_state.holding = false;
+        s_state.returning_zero = true;
+        if (s_state.stepper_reference_valid && s_state.wrist_reference_valid)
+            VehicleApplyPose(ArmPreset_Get(0U), now_ms, dt_s);
         else
         {
-            s_wrist_reference_since_ms = 0U;
+            ArmStepper_Stop();
+            Arm2006_Stop();
         }
+        return;
     }
 
-    if (s_state.stepper_reference_valid)
-        ArmStepper_SetVelocity(VehicleAxis(rc, VEHICLE_CH_STEPPER), true, dt_s);
-    else
-        ArmStepper_Stop();
-
-    if (s_state.wrist_reference_valid)
-    {
-        Arm2006_SetVelocity(VehicleAxis(rc, VEHICLE_CH_WRIST));
-        Arm2006_Update(now_ms, dt_s, true);
-    }
-    else
-    {
-        Arm2006_Stop();
-    }
-
-    /* TIM1_CH1 servo is mechanically installed on the lower arm. */
-    ServoPair_SetLowerArmRate(VehicleAxis(rc, VEHICLE_CH_LOWER_ARM), dt_s);
-    if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_OPEN_LEVEL)
-        ServoPair_SetGripperRate(1.0f, dt_s);
-    else if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_CLOSE_LEVEL)
-        ServoPair_SetGripperRate(-1.0f, dt_s);
-    else
-        ServoPair_HoldSafe();
+    s_state.holding = true;
+    s_state.returning_zero = false;
+    VehicleHoldPose(now_ms, dt_s, entered);
 }
 
 const VehicleControlState *VehicleControl_GetState(void)
 {
     return &s_state;
 }
+
