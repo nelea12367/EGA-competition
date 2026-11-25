@@ -9,17 +9,17 @@
  * UP = high-speed chassis, DOWN = arm mode.
  * Adjust only this file after receiver channel calibration.
  */
-#define VEHICLE_CH_ENABLE             6U
 #define VEHICLE_CH_MODE               7U /* CH8 / SWB */
+#define VEHICLE_CH_PRESET_A           6U /* CH7 / SWA */
+#define VEHICLE_CH_PRESET_D           9U /* CH10 / SWD; verify receiver assignment */
 #define VEHICLE_CH_STEPPER            2U
 #define VEHICLE_CH_LOWER_ARM          3U
 #define VEHICLE_CH_WRIST              0U
 #define VEHICLE_CH_GRIPPER            8U
-#define VEHICLE_ENABLE_LEVEL          RC_SW_UP
 #define VEHICLE_ARM_MODE_LEVEL        RC_SW_DOWN /* SWB down: arm mode */
 #define VEHICLE_GRIPPER_OPEN_LEVEL    RC_SW_UP
 #define VEHICLE_GRIPPER_CLOSE_LEVEL   RC_SW_DOWN
-#define VEHICLE_REFERENCE_HOLD_MS     500U
+#define VEHICLE_REFERENCE_HOLD_MS     1500U
 #define VEHICLE_RC_DEADBAND           0.08f
 
 /*
@@ -83,9 +83,23 @@
  * BOOT_US 是上电后立即保持的位置；MIN/MAX 必须按实物标定，并在机械硬限位前留余量。
  * 当前 1100~1900us 只是沿用旧配置，首次带载前应先托住机械臂并收紧范围。 */
 #define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽*/
+#define VEHICLE_LOWER_ARM_SERVO_ZERO_US       1500U
 #define VEHICLE_LOWER_ARM_SERVO_MIN_US        500U /*最小脉宽*/
 #define VEHICLE_LOWER_ARM_SERVO_MAX_US        2500U /*最大脉宽*/
 #define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     622.0f
+
+#define VEHICLE_PRESET_0_STEPPER_PULSE 0
+#define VEHICLE_PRESET_0_LOWER_ARM_US  VEHICLE_LOWER_ARM_SERVO_ZERO_US
+#define VEHICLE_PRESET_0_WRIST_RAD     0.0f
+#define VEHICLE_PRESET_1_STEPPER_PULSE 0
+#define VEHICLE_PRESET_1_LOWER_ARM_US  VEHICLE_LOWER_ARM_SERVO_ZERO_US
+#define VEHICLE_PRESET_1_WRIST_RAD     0.0f
+#define VEHICLE_PRESET_2_STEPPER_PULSE 0
+#define VEHICLE_PRESET_2_LOWER_ARM_US  VEHICLE_LOWER_ARM_SERVO_ZERO_US
+#define VEHICLE_PRESET_2_WRIST_RAD     0.0f
+#define VEHICLE_PRESET_3_STEPPER_PULSE 0
+#define VEHICLE_PRESET_3_LOWER_ARM_US  VEHICLE_LOWER_ARM_SERVO_ZERO_US
+#define VEHICLE_PRESET_3_WRIST_RAD     0.0f
 
 #define VEHICLE_GRIPPER_MIN_DEG        0.0f
 #define VEHICLE_GRIPPER_MAX_DEG        60.0f
