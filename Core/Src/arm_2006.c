@@ -93,6 +93,18 @@ void Arm2006_SetVelocity(float normalized_velocity)
     s_velocity_request = Vehicle_ClampF(normalized_velocity, -1.0f, 1.0f);
 }
 
+void Arm2006_SetTargetRad(float target_rad)
+{
+    s_state.target_rad = Vehicle_ClampF(target_rad, VEHICLE_WRIST_MIN_RAD, VEHICLE_WRIST_MAX_RAD);
+    s_velocity_request = 0.0f;
+}
+
+void Arm2006_HoldCurrentPosition(void)
+{
+    s_state.target_rad = s_state.angle_rad;
+    s_velocity_request = 0.0f;
+}
+
 bool Arm2006_IsOnline(uint32_t now_ms)
 {
     return s_state.feedback_seen && ((uint32_t)(now_ms - s_state.last_rx_ms) <= VEHICLE_WRIST_TIMEOUT_MS);
