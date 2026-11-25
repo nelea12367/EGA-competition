@@ -28,10 +28,12 @@ static void StepperSetEnable(bool enable)
 void ArmStepper_Init(void)
 {
     s_state.position_pulse = 0;
+    s_state.target_pulse = 0;
     s_state.command_hz = 0.0f;
     s_state.reference_valid = false;
     s_state.running = false;
     s_state.direction_positive = true;
+    s_state.target_active = false;
     StepperSetEnable(false);
     StepperHardwareStop();
 }
@@ -40,9 +42,32 @@ void ArmStepper_SetReference(void)
 {
     StepperHardwareStop();
     s_state.position_pulse = 0;
+    s_state.target_pulse = 0;
     s_state.reference_valid = true;
     /* 记完零点立刻上力矩，别等第一次动才通电。 */
     StepperSetEnable(true);
+}
+
+void ArmStepper_SetTargetPulse(int32_t target_pulse, bool enabled, float dt_s)
+{
+    int32_t error;
+    float request;
+    if (target_pulse < VEHICLE_STEPPER_MIN_PULSE) target_pulse = VEHICLE_STEPPER_MIN_PULSE;
+    if (target_pulse > VEHICLE_STEPPER_MAX_PULSE) target_pulse = VEHICLE_STEPPER_MAX_PULSE;
+    s_state.target_pulse = target_pulse;
+    s_state.target_active = enabled && s_state.reference_valid;
+    if (!s_state.target_active) { ArmStepper_SetVelocity(0.0f, false, dt_s); return; }
+    error = s_state.target_pulse - s_state.position_pulse;
+    if (error == 0) { ArmStepper_SetVelocity(0.0f, true, dt_s); return; }
+    request = Vehicle_ClampF((float)(error < 0 ? -error : error) / 500.0f, 0.15f, 1.0f);
+    ArmStepper_SetVelocity(error < 0 ? -request : request, true, dt_s);
+}
+
+void ArmStepper_HoldCurrentPosition(void)
+{
+    s_state.target_pulse = s_state.position_pulse;
+    s_state.target_active = false;
+    ArmStepper_Stop();
 }
 
 void ArmStepper_SetVelocity(float velocity_normalized, bool enabled, float dt_s)
@@ -122,7 +147,9 @@ void ArmStepper_Stop(void)
 void ArmStepper_OnTimerUpdate(void)
 {
     if (!s_state.running) return;
+    if (s_state.target_active && (s_state.position_pulse == s_state.target_pulse)) { StepperHardwareStop(); return; }
     s_state.position_pulse += s_state.direction_positive ? 1 : -1;
+    if (s_state.target_active && (s_state.position_pulse == s_state.target_pulse)) { StepperHardwareStop(); return; }
     if ((s_state.position_pulse <= VEHICLE_STEPPER_MIN_PULSE) ||
         (s_state.position_pulse >= VEHICLE_STEPPER_MAX_PULSE))
     {
