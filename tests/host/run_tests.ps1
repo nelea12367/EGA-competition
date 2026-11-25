@@ -20,6 +20,17 @@ if ($LASTEXITCODE -ne 0) { throw "host-test compile failed" }
 & $out
 if ($LASTEXITCODE -ne 0) { throw "host test failed" }
 
+$presetOut = Join-Path $PSScriptRoot "test_arm_presets.exe"
+& $compiler.Source -std=c11 -Wall -Wextra -Werror `
+    (Join-Path $PSScriptRoot "test_arm_presets.c") `
+    (Join-Path $root "Core\Src\arm_presets.c") `
+    ("-I" + (Join-Path $root "Core\Inc")) `
+    "-o" $presetOut
+if ($LASTEXITCODE -ne 0) { throw "arm preset test compile failed" }
+
+& $presetOut
+if ($LASTEXITCODE -ne 0) { throw "arm preset test failed" }
+
 & (Join-Path $PSScriptRoot "test_joint_routing.ps1")
 & (Join-Path $PSScriptRoot "test_stepper_pin_routing.ps1")
 & (Join-Path $PSScriptRoot "test_arm_safety_config.ps1")
@@ -35,3 +46,4 @@ if ($LASTEXITCODE -ne 0) { throw "wrist CAN independence test compile failed" }
 
 & $independenceOut
 if ($LASTEXITCODE -ne 0) { throw "wrist CAN independence test failed" }
+
