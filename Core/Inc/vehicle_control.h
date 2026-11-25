@@ -17,6 +17,9 @@ typedef struct
     bool stepper_reference_valid;
     bool wrist_reference_valid;
     bool wrist_online;
+    bool holding;
+    bool returning_zero;
+    uint8_t active_preset;
 } VehicleControlState;
 
 void VehicleControl_Init(void);
@@ -26,3 +29,4 @@ void VehicleControl_ForceStop(void);
 const VehicleControlState *VehicleControl_GetState(void);
 
 #endif /* VEHICLE_CONTROL_H */
+
