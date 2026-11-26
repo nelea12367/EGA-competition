@@ -1,8 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
-$config = Get-Content -Raw -LiteralPath (Join-Path $root "Core\Inc\vehicle_config.h")
-$ioc = Get-Content -Raw -LiteralPath (Join-Path $root "DM_MC02_Chassis.ioc")
+# NOTE: -Encoding UTF8 is required. PowerShell 5.1 reads a BOM-less file as ANSI,
+# and the Chinese comments byte-shift can swallow the following line's newline.
+$config = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $root "Core\Inc\vehicle_config.h")
+$ioc = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $root "DM_MC02_Chassis.ioc")
 
 if ($config -notmatch '#define\s+VEHICLE_STEPPER_USE_ENA\s+0') {
     throw "ENA is physically unwired, so software enable control must stay disabled."
@@ -12,8 +14,14 @@ if ($config -notmatch '#define\s+VEHICLE_WRIST_KI\s+0\.0f') {
     throw "Initial commissioning must keep the M2006 integral gain disabled."
 }
 
-if ($config -notmatch '#define\s+VEHICLE_WRIST_CURRENT_MAX\s+2500') {
-    throw "Initial commissioning must retain the conservative M2006 current limit."
+# The limit was raised to 4500 after bench testing (2500 could not move it);
+# here we only require it to stay below 5000.
+$m = [regex]::Match($config, '#define\s+VEHICLE_WRIST_CURRENT_MAX\s+(\d+)')
+if (!$m.Success) {
+    throw "VEHICLE_WRIST_CURRENT_MAX missing."
+}
+if ([int]$m.Groups[1].Value -gt 5000) {
+    throw ("M2006 current limit too high for first commissioning: " + $m.Groups[1].Value)
 }
 
 foreach ($setting in @(

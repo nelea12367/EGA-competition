@@ -15,8 +15,10 @@ param(
     [string]$OutName = "DM_MC02_Chassis"
 )
 
-# 注意：gcc 输出 warning 时 PowerShell 会把它当成 stderr 错误。
-# 这里用 Continue，只靠 $LASTEXITCODE 判断真正的失败。
+# NOTE: keep this file pure ASCII. Windows PowerShell 5.1 reads a BOM-less
+# .ps1 as ANSI, so non-ASCII comments can swallow the next line's newline.
+# gcc warnings go to stderr and PowerShell treats them as errors here,
+# so use Continue and rely on $LASTEXITCODE to detect a real failure.
 $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
@@ -26,8 +28,16 @@ if ($ToolchainBin -eq "") {
         $ToolchainBin = $env:GCC_BIN
     }
     else {
-        $candidates = Get-ChildItem "C:\ST\STM32CubeIDE_*\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*\tools\bin" -Directory -ErrorAction SilentlyContinue
-        if ($candidates) {
+        # CubeIDE can live on any drive: search these roots in order, or point
+        # STM32CUBEIDE_ROOT at the folder containing STM32CubeIDE_<ver>.
+        $roots = @($env:STM32CUBEIDE_ROOT, "C:\ST", "D:\programming", "D:\ST", "E:\ST") |
+                 Where-Object { $_ -and (Test-Path $_) }
+        $candidates = @()
+        foreach ($r in $roots) {
+            $pattern = Join-Path $r "STM32CubeIDE_*\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*\tools\bin"
+            $candidates += @(Get-ChildItem $pattern -Directory -ErrorAction SilentlyContinue)
+        }
+        if ($candidates.Count -gt 0) {
             $ToolchainBin = $candidates[0].FullName
         }
     }

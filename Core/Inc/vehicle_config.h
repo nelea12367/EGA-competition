@@ -4,31 +4,50 @@
 #include "rc_input.h"
 
 /*
- * 遥控通道分配（实测 FS-i6X + FS-iA10B，SBUS）
+ * 遥控通道分配（按用户要求重新排：FS-i6X + iA6B，SBUS）
  *
- *   SWB  CH8  : 上 = 底盘模式（正常驾驶；SWA/SWD 切换预设）
- *               下 = 机械臂模式（摇杆手动控制）
- *   SWC  CH9  : 上 = 爪子张开   中 = 保持   下 = 爪子合拢
- *   SWA  CH7  : 动作码 bit0（拨下 = 1）
- *   SWD  CH10 : 动作码 bit1（拨下 = 1）
- *   摇杆四轴  : CH3 大臂、CH4 小臂、CH1 腕部、CH2 爪子
+ *   A = SWA  CH7  : 爪子（上 = 张开，下 = 合拢），两种模式下都有效
+ *   B = SWB  CH8  : 上 = 底盘模式；下 = 机械臂模式
+ *   C = SWC  CH9  : 三档（上/中/下），姿态高位
+ *   D = SWD  CH10 : 两档（上/下），姿态低位
+ *                   姿态号 = C 档位 × 2 + D 档位  -> 0~5，共六种
  *
- * 没有单独的总使能开关：SWB 拨上就是安全态。丢掉遥控会立刻停止所有输出，
- * 但保留大臂/腕部的零点（机械臂没动过，零点仍然有效，不用重新回中）。
+ *   机械臂模式（B 拨下）：
+ *     CH3 左杆上下 -> 大臂（DM430 步进）
+ *     CH2 右杆上下 -> 小臂（TIM1_CH1 舵机）
+ *     CH4 左杆左右 -> 腕部（C610 / 2006）
+ *     CH1 右杆左右 -> 拨到底并保持 1 秒 = 三个关节一起校准
+ *
+ *   底盘模式（B 拨上）：
+ *     CH3/CH4 平移，CH1 转向；C × D 选机械臂预设姿态
+ *
+ * 没有单独的总使能开关：B 拨上就是安全态。丢掉遥控会立刻停止所有输出。
  */
 #define VEHICLE_CH_MODE               7U /* CH8 / SWB */
 #define VEHICLE_CH_STEPPER            2U /* CH3 左杆上下 -> 大臂（DM430 步进） */
-#define VEHICLE_CH_LOWER_ARM          3U /* CH4 左杆左右 -> 小臂（TIM1_CH1 舵机） */
-#define VEHICLE_CH_WRIST              0U /* CH1 右杆左右 -> 腕部（C610/2006） */
-#define VEHICLE_CH_GRIPPER_AXIS       1U /* CH2 右杆上下 -> 爪子（SWC 在"保持"档时才生效） */
-#define VEHICLE_CH_GRIPPER            8U /* CH9 / SWC */
-#define VEHICLE_CH_ACTION_BIT0        6U /* CH7  / SWA */
-#define VEHICLE_CH_ACTION_BIT1        9U /* CH10 / SWD */
+#define VEHICLE_CH_LOWER_ARM          1U /* CH2 右杆上下 -> 小臂（TIM1_CH1 舵机） */
+#define VEHICLE_CH_WRIST              3U /* CH4 左杆左右 -> 腕部（C610/2006） */
+#define VEHICLE_CH_GRIPPER            6U /* CH7 / SWA -> 爪子 */
+#define VEHICLE_CH_POSE_C             8U /* CH9 / SWC 三档 -> 姿态高位 */
+#define VEHICLE_CH_POSE_D             9U /* CH10 / SWD 两档 -> 姿态低位 */
+#define VEHICLE_CH_CALIBRATE          0U /* CH1 右杆左右 -> 拨到底校准 */
 
 #define VEHICLE_ARM_MODE_LEVEL        RC_SW_DOWN /* SWB 下 = 机械臂模式 */
 #define VEHICLE_GRIPPER_OPEN_LEVEL    RC_SW_UP
 #define VEHICLE_GRIPPER_CLOSE_LEVEL   RC_SW_DOWN
 #define VEHICLE_RC_DEADBAND           0.08f
+
+/* 姿态切换防抖（毫秒）。
+ * C 是三档开关，从上拨到下必然经过中间档；等组合稳定这么久再执行，
+ * 就能跳过"中间档那个姿态"，机械臂不会先甩一下再到位。 */
+#define VEHICLE_POSE_DEBOUNCE_MS      200U
+
+/* 校准触发（CH1 拨到底）：
+ * 超过 TRIGGER 并保持 HOLD_MS 才执行；必须先回到 RELEASE 以内，
+ * 下一次拨到底才会再次触发（防止一直推在边上反复校准）。 */
+#define VEHICLE_CAL_TRIGGER_LEVEL     0.90f
+#define VEHICLE_CAL_RELEASE_LEVEL     0.10f
+#define VEHICLE_CAL_HOLD_MS           1000U
 
 /* 通道自检固件：1 = 灯不再显示状态，改成"闪 N 下 = 第 N 路在动"，
  * 用来把物理摇杆/开关和 channel 号一一对上（另出一个 hex，平时保持 0）。 */
@@ -51,22 +70,30 @@
 #define VEHICLE_STEPPER_DIRECT_DM430        1
 #define VEHICLE_BOARD_5V_ENABLE_ACTIVE_HIGH 1
 
-/* DM430 pulse/direction axis. Position is counted in pulses from manual zero. */
-#define VEHICLE_STEPPER_MIN_PULSE       (-12000)
-#define VEHICLE_STEPPER_MAX_PULSE       12000
-/* 步进电机"转矩随转速下降"是个硬约束：脉冲频率越高，能带动的负载越小。
- * 直驱大臂时 1000Hz 已经足够让电机在重力负载下失步（表现为"突然掉下去"）。
+/* DM430 脉冲/方向轴。
  *
- * 速度换算（1.8° 步距角）：
- *   350Hz @1/8细分 ≈  79°/s；@1/16细分 ≈ 39°/s   ← 之前，偏慢
- *   700Hz @1/8细分 ≈ 158°/s；@1/16细分 ≈ 79°/s   ← 现在
- * 如果换成 700Hz 后出现"一推就掉一截"，说明当前细分/电流下带不动，
- * 按 600 → 500 → 400 往下退，或者把 DM430 的工作电流拨码调大。 */
-#define VEHICLE_STEPPER_MAX_HZ          1000.0f  /*大臂电机最大运动速度*/
-/* 加/减速（脉冲频率变化率）。700Hz 用 8000Hz/s 约 88ms 到满速，
- * 起停不至于太猛，也不会让人觉得"要等半秒才走"。 */
-#define VEHICLE_STEPPER_ACCEL_HZ_S      8000.0f /*大臂电机加速速度*/
-#define VEHICLE_STEPPER_DECEL_HZ_S      4000.0f /*大臂电机减速速度（减速留余量，避免丢步）*/
+ * 大臂对外一律用"度"，这里给出 度 <-> 脉冲 的换算：
+ *   电机一圈 = 细分数；关节一圈 = 细分数 × 减速比
+ *   每度脉冲 = 细分数 × 减速比 ÷ 360
+ * 这台机器：DM430 1600 档 + 减速比 50 → 每度 222.2 个脉冲。
+ */
+#define VEHICLE_STEPPER_PULSES_PER_REV  1600.0f  /* DM430 细分（SW5~SW8 拨码） */
+#define VEHICLE_STEPPER_GEAR_RATIO      50.0f    /* 电机 50 圈 = 大臂 1 圈 */
+#define VEHICLE_STEPPER_PULSES_PER_DEG  (VEHICLE_STEPPER_PULSES_PER_REV * VEHICLE_STEPPER_GEAR_RATIO / 360.0f)
+
+/* 脉冲行程软限位：±600000 脉冲 ≈ ±2700°（相对校准零点）。 */
+#define VEHICLE_STEPPER_MIN_PULSE       (-600000)
+#define VEHICLE_STEPPER_MAX_PULSE       600000
+
+/* 最大脉冲频率：222 脉冲/度 时 25000Hz ≈ 112°/s，是"姿态走位"的上限。
+ * 手动速度另由 VEHICLE_STEPPER_MANUAL_DPS 决定。
+ * 如果出现"一推就掉一截"，说明当前细分/电流下带不动，
+ * 把 VEHICLE_STEPPER_MANUAL_DPS 或这个上限往下调，或者把 DM430 电流拨码调大。 */
+#define VEHICLE_STEPPER_MAX_HZ          25000.0f
+/* 加/减速（脉冲频率变化率）。要和最大频率同量级，
+ * 否则从 0 爬到 25000Hz 要十几秒（看着像不动）。120000Hz/s ≈ 0.2 秒到满速。 */
+#define VEHICLE_STEPPER_ACCEL_HZ_S      120000.0f /*大臂电机加速速度*/
+#define VEHICLE_STEPPER_DECEL_HZ_S      120000.0f /*大臂电机减速速度*/
 #define VEHICLE_STEPPER_DIR_POSITIVE    1
 /* ENA 目前物理上悬空，软件写 PE14 不会影响 DM430；保持为 0，避免误以为
  * 代码可以控制驱动器使能。实际接通 ENA 后再改为 1，并核实有效电平。 */
@@ -108,13 +135,42 @@
 /* PID 按 1kHz 跑；0x1FF 发 500Hz（2ms）已经足够平滑，再高只是占总线。 */
 #define VEHICLE_WRIST_SEND_PERIOD_MS         2U
 
-/* TIM1_CH1 小臂舵机直接使用脉宽控制，不再经过“角度 -> 脉宽”映射。
- * BOOT_US 是上电后立即保持的位置；MIN/MAX 必须按实物标定，并在机械硬限位前留余量。
- * 当前 1100~1900us 只是沿用旧配置，首次带载前应先托住机械臂并收紧范围。 */
-#define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽*/
-#define VEHICLE_LOWER_ARM_SERVO_MIN_US        1100U /*最小脉宽（500 会让舵机顶到机械硬限位，堵转发热）*/
-#define VEHICLE_LOWER_ARM_SERVO_MAX_US        1900U /*最大脉宽（2500 同上）*/
-#define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     1000.0f
+/* TIM1_CH1 小臂舵机：**180° 舵机（youmi YM-3245）**
+ *
+ *   500us = 0°      1500us = 90°（中位）      2500us = 180°
+ *   每度 = 2000us / 180° = 11.111us
+ *
+ * MIN/MAX 就是"允许输出到舵机的脉宽"：
+ *   500~2500 = 满行程 180°（舵机规格书的极限）
+ *   现在按满行程给，如果两端出现嗡嗡声/发热（顶到舵机内部限位或机构限位），
+ *   把对应那一侧往中间收 60~100us，例如 560 / 2440（≈±85°）。
+ *
+ * 换舵机时这两个系数必须一起改：
+ *   270°: US_PER_DEG = 2000/270 = 7.407
+ *   180°: US_PER_DEG = 2000/180 = 11.111   <- 现在用这个
+ */
+#define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽（中位 = 0°）*/
+#define VEHICLE_LOWER_ARM_SERVO_MIN_US         500U /*最小脉宽 = -90°*/
+#define VEHICLE_LOWER_ARM_SERVO_MAX_US        2500U /*最大脉宽 = +90°*/
+#define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     1000.0f /* 脉宽变化率：1000us/s ≈ 90°/s */
+
+/* 180° 舵机：每度 11.111us。参考脉宽 1500us 对应 0°。 */
+#define VEHICLE_LOWER_ARM_US_PER_DEG          11.111f
+#define VEHICLE_LOWER_ARM_ZERO_US             1500.0f
+#define VEHICLE_LOWER_ARM_ZERO_DEG            0.0f
+
+/* ---- 机械臂模式（B 关）下三个关节手动转速，单位统一成「度/秒」----
+ * 摇杆推到底就是这么多度/秒。改手感只改这三个数，不用再换算脉冲/脉宽/弧度。 */
+#define VEHICLE_STEPPER_MANUAL_DPS            90.0f   /* 大臂 */
+#define VEHICLE_LOWER_ARM_MANUAL_DPS          84.0f   /* 小臂（≈1500us 到 2125us 的速度） */
+#define VEHICLE_WRIST_MANUAL_DPS             172.0f   /* 腕部（≈原来 3.0 rad/s） */
+
+/* ---- 机械臂校准角度 ----
+ * "校准"= 把当前位置定义成下面这个角度。开机自动做一次，
+ * 机械臂模式下也可以拨 CH1 到底重新做（见 VEHICLE_CAL_*）。
+ * 大臂和腕部可填非零值；小臂是绝对舵机，不参与校准。 */
+#define VEHICLE_CAL_STEPPER_DEG               0.0f
+#define VEHICLE_CAL_WRIST_DEG                 0.0f
 
 #define VEHICLE_GRIPPER_MIN_DEG        0.0f
 #define VEHICLE_GRIPPER_MAX_DEG        60.0f
@@ -126,52 +182,54 @@
 /* ========================================================================
  * 机械臂预设动作（SWA + SWD 两位二进制）
  *
- *   四个动作码都可以分别配置大臂、小臂和腕部目标。
+ *   六种姿态由 C（三档）× D（两档）组合决定：
  *
- *   bit0 = SWA：上 = 小臂 A 位，下 = 小臂 B 位
- *   bit1 = SWD：上 = 腕部 A 位，下 = 腕部 B 位
+ *     姿态号 = C 档位 × 2 + D 档位
+ *     C：0 = 上，1 = 中，2 = 下
+ *     D：0 = 上，1 = 下
  *
- *   00  SWA上 SWD上  ->  小臂A + 腕A
- *   01  SWA下 SWD上  ->  小臂B + 腕A
- *   10  SWA上 SWD下  ->  小臂A + 腕B
- *   11  SWA下 SWD下  ->  小臂B + 腕B
+ *     0  C上 D上      3  C中 D下
+ *     1  C上 D下      4  C下 D上
+ *     2  C中 D上      5  C下 D下
  *
- * 预设只在底盘模式解释：爪子不参与预设，始终跟 SWC/CH2；大臂、小臂和腕部一起走预设。
- * 大臂目标用相对软件零点的脉冲数表示，切换时受已有的速度、加减速和
- * 行程保护约束。
+ * 预设只在底盘模式解释：爪子不参与预设，始终跟 A(SWA)；大臂、小臂和腕部一起走预设。
+ * 三个目标都用「度」表示，切换时受已有的速度、加减速和行程保护约束。
  *
  * 切入底盘模式后，当前组合只作为基线；之后拨到任一新组合时，大臂、小臂和腕部
- * 立即走到对应位置并保持。机械臂模式完全忽略 SWA/SWD，只响应摇杆手动控制。
+ * 立即走到对应位置并保持。机械臂模式完全忽略 C/D，只响应摇杆手动控制。
  *
- * ⚠ 下面四个姿态是**占位值**，必须按你的机构实测后替换：
- *     stepper_pulse: 大臂相对软件零点的脉冲数，范围 VEHICLE_STEPPER_MIN/MAX_PULSE
- *     lower_arm_us : 小臂舵机脉宽，范围 VEHICLE_LOWER_ARM_SERVO_MIN/MAX_US
- *     wrist_rad    : 腕部弧度，相对零点，范围 VEHICLE_WRIST_MIN/MAX_RAD
+ * ⚠ 下面六个姿态是**占位值**，必须按你的机构实测后替换。
+ *    单位统一是「度」，正值/负值按你定义的正方向：
+ *    stepper_deg   : 大臂，相对校准零点（范围由 VEHICLE_STEPPER_MIN/MAX_PULSE 限制）
+ *    lower_arm_deg : 小臂，0° = 参考脉宽 1500us（范围受 MIN/MAX_US 限制）
+ *    wrist_deg     : 腕部，相对校准零点（范围受 VEHICLE_WRIST_MIN/MAX_RAD 限制）
+ *   某个关节转向反了，不要改这里的正负号，去改对应的 DIR/REVERSED 宏。
  * ======================================================================*/
 typedef struct
 {
-    int32_t stepper_pulse;
-    float lower_arm_us;
-    float wrist_rad;
+    float stepper_deg;
+    float lower_arm_deg;
+    float wrist_deg;
 } VehiclePose;
 
-#define VEHICLE_POSE_COUNT 4U
+#define VEHICLE_POSE_COUNT 6U
 
-#define VEHICLE_POSE_TABLE                              \
-{                                                       \
-    /* 00 大臂零点 + 小臂A + 腕A */ { 0, 1500.0f, 0.00f }, \
-    /* 01 大臂零点 + 小臂B + 腕A */ { 200, 1700.0f, -0.60f }, \
-    /* 10 大臂零点 + 小臂A + 腕B */ { -200, 2000.0f, 0.60f }, \
-    /* 11 大臂零点 + 小臂B + 腕B */ { 0, 1200.0f, 0.60f }  \
+#define VEHICLE_POSE_TABLE                                          \
+{                                                                   \
+    /* 姿态0  C上 + D上 */ {   0.0f,   0.0f,   0.0f },              \
+    /* 姿态1  C上 + D下 */ {  20.0f,  20.0f, -20.0f },              \
+    /* 姿态2  C中 + D上 */ { -20.0f,  40.0f,  20.0f },              \
+    /* 姿态3  C中 + D下 */ {  40.0f,  60.0f,  40.0f },              \
+    /* 姿态4  C下 + D上 */ { -40.0f, -20.0f, -40.0f },              \
+    /* 姿态5  C下 + D下 */ {   0.0f,  80.0f,   0.0f }               \
 }
 
-/* 到位速度：误差 / FULL = 归一化速度，超过 1 截断；误差小于 DEADBAND 就停。
- * 大臂脉冲相对于首次收到有效遥控后的软件零点。 */
-#define VEHICLE_POSE_STEPPER_FULL_PULSE       1000.0f
-#define VEHICLE_POSE_STEPPER_DEADBAND            10.0f
-#define VEHICLE_POSE_WRIST_FULL_RAD         0.50f
-#define VEHICLE_POSE_WRIST_DEADBAND         0.02f
-#define VEHICLE_POSE_SERVO_FULL_US        200.0f
-#define VEHICLE_POSE_SERVO_DEADBAND        10.0f
+/* 到位速度：误差(度) / FULL = 归一化速度，超过 1 截断；误差小于 DEADBAND 就停。 */
+#define VEHICLE_POSE_STEPPER_FULL_DEG       15.0f
+#define VEHICLE_POSE_STEPPER_DEADBAND        0.5f
+#define VEHICLE_POSE_WRIST_FULL_DEG         15.0f
+#define VEHICLE_POSE_WRIST_DEADBAND          0.5f
+#define VEHICLE_POSE_SERVO_FULL_DEG         20.0f
+#define VEHICLE_POSE_SERVO_DEADBAND          1.0f
 
 #endif /* VEHICLE_CONFIG_H */

@@ -7,6 +7,22 @@
 
 static ArmStepperState s_state;
 
+/* ==========================================================================
+ * 诊断变量（SWD 可读，用来判断"大臂到底卡在哪一步"）
+ *   g_dbg_step_ref      1 = 零点已建立
+ *   g_dbg_step_hz_now   当前下发频率（Hz）
+ *   g_dbg_step_hz_max   自上次清零以来见过的最大 |频率|
+ *   g_dbg_step_pulse    脉冲计数
+ *   g_dbg_pulses_total  ISR 里累计发过的脉冲总数（从不清零，只会涨）
+ *   g_dbg_step_running  1 = 定时器正在发脉冲
+ * ==========================================================================*/
+volatile int32_t g_dbg_step_ref;
+volatile float   g_dbg_step_hz_now;
+volatile float   g_dbg_step_hz_max;
+volatile int32_t g_dbg_step_pulse;
+volatile int32_t g_dbg_step_running;
+volatile uint32_t g_dbg_pulses_total;
+
 static void StepperHardwareStop(void)
 {
     __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_UPDATE);
@@ -34,6 +50,10 @@ void ArmStepper_Init(void)
     s_state.direction_positive = true;
     StepperSetEnable(false);
     StepperHardwareStop();
+    g_dbg_step_ref = 0;
+    g_dbg_step_hz_now = 0.0f;
+    g_dbg_step_running = 0;
+    g_dbg_step_pulse = 0;
 }
 
 void ArmStepper_SetReference(void)
@@ -41,6 +61,8 @@ void ArmStepper_SetReference(void)
     StepperHardwareStop();
     s_state.position_pulse = 0;
     s_state.reference_valid = true;
+    g_dbg_step_ref = 1;
+    g_dbg_step_pulse = 0;
     /* 记完零点立刻上力矩，别等第一次动才通电。 */
     StepperSetEnable(true);
 }
@@ -54,6 +76,9 @@ void ArmStepper_SetVelocity(float velocity_normalized, bool enabled, float dt_s)
     {
         StepperHardwareStop();
         StepperSetEnable(false);
+        g_dbg_step_ref = s_state.reference_valid ? 1 : 0;
+        g_dbg_step_hz_now = 0.0f;
+        g_dbg_step_running = 0;
         return;
     }
 
@@ -75,6 +100,9 @@ void ArmStepper_SetVelocity(float velocity_normalized, bool enabled, float dt_s)
     {
         /* 停脉冲，但保持驱动器通电：重力负载靠静力矩顶住，否则整条臂会自由下坠。 */
         StepperHardwareStop();
+        g_dbg_step_hz_now = 0.0f;
+        g_dbg_step_running = 0;
+        g_dbg_step_pulse = s_state.position_pulse;
 #if (VEHICLE_STEPPER_HOLD_TORQUE != 0)
         StepperSetEnable(true);
 #else
@@ -84,6 +112,16 @@ void ArmStepper_SetVelocity(float velocity_normalized, bool enabled, float dt_s)
     }
 
     s_state.direction_positive = (s_state.command_hz > 0.0f);
+
+    /* 诊断：把内部状态抄出来 */
+    g_dbg_step_ref = 1;
+    g_dbg_step_hz_now = s_state.command_hz;
+    if (Vehicle_AbsF(s_state.command_hz) > Vehicle_AbsF(g_dbg_step_hz_max))
+    {
+        g_dbg_step_hz_max = s_state.command_hz;
+    }
+    g_dbg_step_pulse = s_state.position_pulse;
+    g_dbg_step_running = s_state.running ? 1 : 0;
     {
         bool driver_direction_high = (s_state.direction_positive == (VEHICLE_STEPPER_DIR_POSITIVE != 0));
 #if (VEHICLE_STEPPER_DIRECT_DM430 != 0)
@@ -123,6 +161,8 @@ void ArmStepper_OnTimerUpdate(void)
 {
     if (!s_state.running) return;
     s_state.position_pulse += s_state.direction_positive ? 1 : -1;
+    g_dbg_pulses_total++;
+    g_dbg_step_pulse = s_state.position_pulse;
     if ((s_state.position_pulse <= VEHICLE_STEPPER_MIN_PULSE) ||
         (s_state.position_pulse >= VEHICLE_STEPPER_MAX_PULSE))
     {

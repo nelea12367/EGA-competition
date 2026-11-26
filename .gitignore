@@ -20,3 +20,8 @@
 *.bak
 *.tmp
 .idea/
+
+# Python cache (tools/upper)
+__pycache__/
+*.pyc
+

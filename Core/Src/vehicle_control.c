@@ -18,13 +18,25 @@ static uint32_t s_last_ms;
 static uint32_t s_last_chassis_zero_ms;
 static VehicleMode s_last_mode;
 
-/* SWA/SWD 两位动作码。每个 bit 独立锁存：开关经过中间位时保持上一次的值，
- * 不会因为路过中点就把动作码抖成别的组合。 */
-static uint8_t s_action_bit0;
-static uint8_t s_action_bit1;
-static uint8_t s_action_code;      /* 已经生效的动作码 */
-static bool s_pose_active;         /* 正在跑预设姿态 */
-static bool s_action_init;         /* 切入底盘模式后第一次读到开关位置只当基线 */
+/* 姿态选择：C（三档）× D（两档）= 六种组合。
+ * 姿态号 = C 档位 × 2 + D 档位，需要防抖——C 从上拨到下必经中间档。 */
+static uint8_t s_pose_pending;       /* 最近读到的姿态号 */
+static uint8_t s_pose_applied;       /* 已生效的姿态号，0xFF = 还没生效 */
+static uint32_t s_pose_since_ms;     /* 当前组合第一次出现的时间 */
+static bool s_pose_active;           /* 正在跑预设姿态 */
+
+/* 校准触发状态机（CH1 拨到底保持 1 秒） */
+static bool s_cal_armed;             /* 已回过中，允许下一次触发 */
+static uint32_t s_cal_since_ms;      /* 拨到底开始计时，0 = 没在计时 */
+
+/* 校准偏移：把"校准那一刻"定义成 VEHICLE_CAL_*_DEG。
+ * 显示角度 = 原生角度 + 偏移；姿态目标也按显示角度比较。 */
+static float s_stepper_off_deg;
+static float s_wrist_off_deg;
+
+/* 诊断量（SWD 可读）：机械臂模式下 CH3 解析后的摇杆量，以及当前模式 */
+volatile float   g_dbg_stick_step;
+volatile int32_t g_dbg_mode;
 
 static const VehiclePose s_poses[VEHICLE_POSE_COUNT] = VEHICLE_POSE_TABLE;
 
@@ -43,17 +55,118 @@ static float VehicleAxis(const RcData *rc, uint8_t channel)
 }
 
 /**
- * @brief 读 SWA/SWD 组成的 2 位动作码。拨下 = 1，bit0 = SWA，bit1 = SWD。
+ * @brief 把 C（三档）× D（两档）翻译成 0~5 的姿态号。
+ *
+ *   姿态号 = C 档位 × 2 + D 档位
+ *   C：0 = 上，1 = 中，2 = 下
+ *   D：0 = 上，1 = 下
  */
-static uint8_t VehicleActionCode(const RcData *rc)
+static uint8_t VehiclePoseIndex(const RcData *rc)
 {
-    uint8_t low = rc->switch_pos[VEHICLE_CH_ACTION_BIT0];
-    uint8_t high = rc->switch_pos[VEHICLE_CH_ACTION_BIT1];
+    uint8_t sw = rc->switch_pos[VEHICLE_CH_POSE_C];
+    uint8_t c;
 
-    if (low != RC_SW_MID) s_action_bit0 = (low == RC_SW_DOWN) ? 1U : 0U;
-    if (high != RC_SW_MID) s_action_bit1 = (high == RC_SW_DOWN) ? 1U : 0U;
+    /* 用"等于哪一档"判定，不依赖 RC_SW_* 的具体数值 */
+    if (sw == RC_SW_UP)        c = 0U;   /* 上 */
+    else if (sw == RC_SW_DOWN) c = 2U;   /* 下 */
+    else                       c = 1U;   /* 其余一律当中间档 */
 
-    return (uint8_t)(s_action_bit0 | (s_action_bit1 << 1));
+    return (uint8_t)(c * 2U + ((rc->switch_pos[VEHICLE_CH_POSE_D] == RC_SW_DOWN) ? 1U : 0U));
+}
+
+/**
+ * @brief 爪子：A（SWA）拨上 = 张开，拨下 = 合拢。两种模式下都一样。
+ */
+static void VehicleClawUpdate(const RcData *rc, float dt_s)
+{
+    if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_OPEN_LEVEL)
+    {
+        ServoPair_SetGripperRate(1.0f, dt_s);
+    }
+    else if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_CLOSE_LEVEL)
+    {
+        ServoPair_SetGripperRate(-1.0f, dt_s);
+    }
+    else
+    {
+        ServoPair_HoldSafe();
+    }
+}
+
+/**
+ * @brief 校准：CH1 拨到底并保持 VEHICLE_CAL_HOLD_MS，把当前姿态重新定为零点。
+ * @return true 表示这一拍刚做过校准（调用方应跳过本拍的关节输出）。
+ */
+static bool VehicleCalibrate(uint32_t now_ms, const RcData *rc)
+{
+    float axis = rc->analog[VEHICLE_CH_CALIBRATE];
+
+    /* 先回中才重新上膛，避免一直推在边上反复校准 */
+    if (Vehicle_AbsF(axis) < VEHICLE_CAL_RELEASE_LEVEL)
+    {
+        s_cal_armed = true;
+    }
+
+    if (s_cal_armed && (Vehicle_AbsF(axis) >= VEHICLE_CAL_TRIGGER_LEVEL))
+    {
+        if (s_cal_since_ms == 0U) s_cal_since_ms = now_ms;
+
+        if ((uint32_t)(now_ms - s_cal_since_ms) >= VEHICLE_CAL_HOLD_MS)
+        {
+            ArmStepper_SetReference();
+            Arm2006_SetReference();
+            s_state.stepper_reference_valid = ArmStepper_GetState()->reference_valid;
+            s_state.wrist_reference_valid = Arm2006_GetState()->reference_valid;
+
+            /* 把"此刻"定义成校准角度（默认 0°） */
+            s_stepper_off_deg = VEHICLE_CAL_STEPPER_DEG;
+            s_wrist_off_deg = VEHICLE_CAL_WRIST_DEG;
+
+            s_cal_armed = false;
+            s_cal_since_ms = 0U;
+            return true;
+        }
+    }
+    else
+    {
+        s_cal_since_ms = 0U;
+    }
+
+    return false;
+}
+
+/* ==========================================================================
+ * 三个关节的"当前角度"，单位统一是「度」。
+ *
+ * 大臂/腕部是增量器件：位置靠脉冲计数/编码器累加，校准只是把"此刻"定义成
+ * VEHICLE_CAL_*_DEG，所以用一个偏移量表示。
+ * 小臂是绝对舵机：脉宽直接对应角度，不需要偏移。
+ * ==========================================================================*/
+
+static float VehicleStepperDeg(void)
+{
+    return ((float)ArmStepper_GetState()->position_pulse / VEHICLE_STEPPER_PULSES_PER_DEG)
+           + s_stepper_off_deg;
+}
+
+static float VehicleLowerArmDeg(void)
+{
+    return VEHICLE_LOWER_ARM_ZERO_DEG +
+           ((ServoPair_GetState()->lower_arm_command_us - VEHICLE_LOWER_ARM_ZERO_US) /
+            VEHICLE_LOWER_ARM_US_PER_DEG);
+}
+
+static float VehicleWristDeg(void)
+{
+    return (Arm2006_GetState()->angle_rad * 57.2957795f) + s_wrist_off_deg;
+}
+
+/* 把 -1~1 之外的值夹回边界 */
+static float VehicleClampUnit(float value)
+{
+    if (value > 1.0f) return 1.0f;
+    if (value < -1.0f) return -1.0f;
+    return value;
 }
 
 /**
@@ -93,31 +206,55 @@ static void VehicleEnsureReferences(void)
     {
         ArmStepper_SetReference();
         s_state.stepper_reference_valid = ArmStepper_GetState()->reference_valid;
+        if (s_state.stepper_reference_valid)
+        {
+            /* 原生零点已复位，把"此刻"定义成校准角度 */
+            s_stepper_off_deg = VEHICLE_CAL_STEPPER_DEG;
+        }
     }
 
     if ((!s_state.wrist_reference_valid) && s_state.wrist_online)
     {
         Arm2006_SetReference();
         s_state.wrist_reference_valid = Arm2006_GetState()->reference_valid;
+        if (s_state.wrist_reference_valid)
+        {
+            s_wrist_off_deg = VEHICLE_CAL_WRIST_DEG;
+        }
     }
 }
 
-/* 预设只在底盘模式解释。切入底盘模式时先采集基线，之后任何有效的
- * SWA/SWD 组合变化都立即生效，不再等待去抖时间。 */
-static void VehicleUpdateDrivePose(const RcData *rc)
+/* 预设只在底盘模式解释。C 是三档开关，从上拨到下必然经过中间档，
+ * 所以等组合稳定 VEHICLE_POSE_DEBOUNCE_MS 之后才执行，跳过中间那个姿态。 */
+static void VehicleUpdateDrivePose(uint32_t now_ms, const RcData *rc)
 {
-    uint8_t code = VehicleActionCode(rc);
+    uint8_t pose = VehiclePoseIndex(rc);
 
-    if (!s_action_init)
+    /* 刚切入底盘模式：把当前组合当基线，稳定一段时间后再执行 */
+    if (s_pose_applied == 0xFFU)
     {
-        s_action_init = true;
-        s_action_code = code;
+        s_pose_pending = pose;
+        if (s_pose_since_ms == 0U) s_pose_since_ms = now_ms;
+
+        if ((uint32_t)(now_ms - s_pose_since_ms) >= VEHICLE_POSE_DEBOUNCE_MS)
+        {
+            s_pose_applied = pose;
+            s_pose_active = true;
+        }
         return;
     }
 
-    if (code != s_action_code)
+    if (pose != s_pose_pending)
     {
-        s_action_code = code;
+        s_pose_pending = pose;
+        s_pose_since_ms = now_ms;
+        return;
+    }
+
+    if ((s_pose_applied != s_pose_pending) &&
+        ((uint32_t)(now_ms - s_pose_since_ms) >= VEHICLE_POSE_DEBOUNCE_MS))
+    {
+        s_pose_applied = s_pose_pending;
         s_pose_active = true;
     }
 }
@@ -132,11 +269,12 @@ void VehicleControl_Init(void)
     s_last_ms = HAL_GetTick();
     s_last_chassis_zero_ms = 0U;
     s_last_mode = VEHICLE_MODE_DRIVE;
-    s_action_bit0 = 0U;
-    s_action_bit1 = 0U;
-    s_action_code = 0U;
+    s_pose_pending = 0U;
+    s_pose_applied = 0xFFU;   /* 还没生效任何姿态 */
+    s_pose_since_ms = 0U;
     s_pose_active = false;
-    s_action_init = false;
+    s_cal_armed = false;
+    s_cal_since_ms = 0U;
     ArmStepper_Init();
     Arm2006_Init();
     ServoPair_Init();
@@ -157,7 +295,8 @@ static void VehicleControl_StopMotion(void)
     ServoPair_HoldSafe();
     s_state.enabled = false;
     s_pose_active = false;
-    s_action_init = false;
+    s_pose_applied = 0xFFU;   /* 下次进底盘模式重新贴一次姿态 */
+    s_cal_since_ms = 0U;
 }
 
 void VehicleControl_ForceStop(void)
@@ -194,6 +333,8 @@ void VehicleControl_Update(uint32_t now_ms)
                    VEHICLE_MODE_ARM : VEHICLE_MODE_DRIVE;
     s_state.enabled = link_ok;
     s_state.wrist_online = Arm2006_IsOnline(now_ms);
+    g_dbg_mode = (s_state.mode == VEHICLE_MODE_ARM) ? 1 : 0;
+    g_dbg_stick_step = VehicleAxis(rc, VEHICLE_CH_STEPPER);
 
     if (!link_ok)
     {
@@ -208,24 +349,24 @@ void VehicleControl_Update(uint32_t now_ms)
     {
         const VehiclePose *pose;
 
-        /* 每次切入底盘模式均要求重新拨动 SWA/SWD，避免模式切换误触发。 */
+        /* 每次切入底盘模式都重新贴一次姿态（角度基准可能刚被校准改过）。 */
         if (s_last_mode != VEHICLE_MODE_DRIVE)
         {
             s_pose_active = false;
-            s_action_init = false;
+            s_pose_applied = 0xFFU;
+            s_pose_since_ms = 0U;
         }
-        VehicleUpdateDrivePose(rc);
-        if (s_action_code >= VEHICLE_POSE_COUNT) s_action_code = 0U;
-        pose = &s_poses[s_action_code];
+        VehicleUpdateDrivePose(now_ms, rc);
+        if (s_pose_applied >= VEHICLE_POSE_COUNT) s_pose_applied = 0U;
+        pose = &s_poses[s_pose_applied];
 
         /* 底盘模式仍正常驾驶；仅在预设激活后才驱动大臂、小臂和腕部。 */
         if (s_pose_active)
         {
             if (s_state.stepper_reference_valid)
             {
-                ArmStepper_SetVelocity(VehicleApproach((float)pose->stepper_pulse -
-                                                        (float)ArmStepper_GetState()->position_pulse,
-                                                        VEHICLE_POSE_STEPPER_FULL_PULSE,
+                ArmStepper_SetVelocity(VehicleApproach(pose->stepper_deg - VehicleStepperDeg(),
+                                                        VEHICLE_POSE_STEPPER_FULL_DEG,
                                                         VEHICLE_POSE_STEPPER_DEADBAND),
                                        true, dt_s);
             }
@@ -236,9 +377,8 @@ void VehicleControl_Update(uint32_t now_ms)
 
             if (s_state.wrist_reference_valid)
             {
-                Arm2006_SetVelocity(VehicleApproach(pose->wrist_rad -
-                                                     Arm2006_GetState()->angle_rad,
-                                                     VEHICLE_POSE_WRIST_FULL_RAD,
+                Arm2006_SetVelocity(VehicleApproach(pose->wrist_deg - VehicleWristDeg(),
+                                                     VEHICLE_POSE_WRIST_FULL_DEG,
                                                      VEHICLE_POSE_WRIST_DEADBAND));
                 Arm2006_Update(now_ms, dt_s, true);
             }
@@ -247,9 +387,8 @@ void VehicleControl_Update(uint32_t now_ms)
                 Arm2006_Stop();
             }
 
-            ServoPair_SetLowerArmRate(VehicleApproach(pose->lower_arm_us -
-                                                       ServoPair_GetState()->lower_arm_command_us,
-                                                       VEHICLE_POSE_SERVO_FULL_US,
+            ServoPair_SetLowerArmRate(VehicleApproach(pose->lower_arm_deg - VehicleLowerArmDeg(),
+                                                       VEHICLE_POSE_SERVO_FULL_DEG,
                                                        VEHICLE_POSE_SERVO_DEADBAND),
                                       dt_s);
         }
@@ -273,6 +412,10 @@ void VehicleControl_Update(uint32_t now_ms)
 #endif
             ServoPair_HoldSafe();
         }
+
+        /* 爪子：A（SWA）在两种模式下都生效，不参与预设 */
+        VehicleClawUpdate(rc, dt_s);
+
         Chassis_Update(now_ms);
         s_last_mode = s_state.mode;
         return;
@@ -286,22 +429,41 @@ void VehicleControl_Update(uint32_t now_ms)
         Chassis_ForceStop();
     }
     s_last_mode = s_state.mode;
-    /* 机械臂模式不解释动作码，三个关节只接受摇杆手动控制。 */
+    /* 机械臂模式不解释 C/D，三个关节只接受摇杆手动控制。 */
     s_pose_active = false;
-    s_action_init = false;
+    s_pose_applied = 0xFFU;
 
-    /* --- 大臂（DM430 步进）：CH3 手动控制 --- */
+    /* --- 校准：CH1 拨到底保持 1 秒，三个关节一起重新定零 ---
+     * 校准这一拍不要再往下发运动指令，否则刚定的零点立刻被手部动作带偏。 */
+    if (VehicleCalibrate(now_ms, rc))
     {
-        float command = VehicleAxis(rc, VEHICLE_CH_STEPPER);
-
-        if (s_state.stepper_reference_valid) ArmStepper_SetVelocity(command, true, dt_s);
-        else ArmStepper_Stop();
+        ArmStepper_Stop();
+        Arm2006_Stop();
+        ServoPair_HoldSafe();
+        return;
     }
 
-    /* --- 腕部（C610 + 2006，位置环） --- */
+    /* --- 大臂（DM430 步进）：CH3 左杆上下，摇杆量 × VEHICLE_STEPPER_MANUAL_DPS --- */
+    {
+        float dps = VehicleAxis(rc, VEHICLE_CH_STEPPER) * VEHICLE_STEPPER_MANUAL_DPS;
+        float hz = dps * VEHICLE_STEPPER_PULSES_PER_DEG;
+
+        if (s_state.stepper_reference_valid)
+        {
+            ArmStepper_SetVelocity(VehicleClampUnit(hz / VEHICLE_STEPPER_MAX_HZ), true, dt_s);
+        }
+        else
+        {
+            ArmStepper_Stop();
+        }
+    }
+
+    /* --- 腕部（C610 + 2006，位置环）：CH4 左杆左右，摇杆量 × VEHICLE_WRIST_MANUAL_DPS --- */
     if (s_state.wrist_reference_valid)
     {
-        Arm2006_SetVelocity(VehicleAxis(rc, VEHICLE_CH_WRIST));
+        Arm2006_SetVelocity(VehicleClampUnit(
+            (VehicleAxis(rc, VEHICLE_CH_WRIST) * VEHICLE_WRIST_MANUAL_DPS * 0.0174532925f) /
+            VEHICLE_WRIST_MAX_RATE_RAD_S));
         Arm2006_Update(now_ms, dt_s, true);
     }
     else
@@ -309,31 +471,16 @@ void VehicleControl_Update(uint32_t now_ms)
         Arm2006_Stop();
     }
 
-    /* --- 小臂（TIM1_CH1 舵机，按脉宽斜率走） --- */
-    ServoPair_SetLowerArmRate(VehicleAxis(rc, VEHICLE_CH_LOWER_ARM), dt_s);
+    /* --- 小臂（TIM1_CH1 舵机）：CH2 右杆上下，摇杆量 × VEHICLE_LOWER_ARM_MANUAL_DPS ---
+     * 舵机接口收的是"归一化速率"，它内部按 VEHICLE_LOWER_ARM_SERVO_RATE_US_S 走；
+     * 这里把 度/秒 换算成同一个归一化尺度。 */
+    ServoPair_SetLowerArmRate(
+        VehicleClampUnit((VehicleAxis(rc, VEHICLE_CH_LOWER_ARM) * VEHICLE_LOWER_ARM_MANUAL_DPS *
+                          VEHICLE_LOWER_ARM_US_PER_DEG) / VEHICLE_LOWER_ARM_SERVO_RATE_US_S),
+        dt_s);
 
-    /* --- 爪子：摇杆优先（手动）→ SWC → 保持 --- */
-    {
-        uint8_t swc = rc->switch_pos[VEHICLE_CH_GRIPPER];
-        float stick = VehicleAxis(rc, VEHICLE_CH_GRIPPER_AXIS);
-
-        if (stick != 0.0f)
-        {
-            ServoPair_SetGripperRate(stick, dt_s);
-        }
-        else if (swc == VEHICLE_GRIPPER_OPEN_LEVEL)
-        {
-            ServoPair_SetGripperRate(1.0f, dt_s);
-        }
-        else if (swc == VEHICLE_GRIPPER_CLOSE_LEVEL)
-        {
-            ServoPair_SetGripperRate(-1.0f, dt_s);
-        }
-        else
-        {
-            ServoPair_HoldSafe();
-        }
-    }
+    /* --- 爪子：A（SWA）张开 / 合拢 --- */
+    VehicleClawUpdate(rc, dt_s);
 }
 
 const VehicleControlState *VehicleControl_GetState(void)

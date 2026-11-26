@@ -67,9 +67,9 @@ int main(void)
 {
     g_rc_valid = true;
     g_wrist_online = true;
-    g_rc.switch_pos[VEHICLE_CH_MODE] = RC_SW_UP;
-    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT0] = RC_SW_UP;
-    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT1] = RC_SW_UP;
+    g_rc.switch_pos[VEHICLE_CH_MODE] = RC_SW_UP;      /* 底盘模式 */
+    g_rc.switch_pos[VEHICLE_CH_POSE_C] = RC_SW_UP;    /* C 上 */
+    g_rc.switch_pos[VEHICLE_CH_POSE_D] = RC_SW_UP;    /* D 上 -> 姿态 0 */
     VehicleControl_Init();
 
     g_now = 1U;
@@ -77,25 +77,36 @@ int main(void)
     assert(g_chassis_update_calls == 1U);
     assert(g_stepper_reference_calls == 1U);
 
-    /* A drive-mode switch change must command the pose immediately while the
-     * chassis update continues; it must not wait for the legacy debounce. */
-    g_stepper.position_pulse = 600;
-    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT0] = RC_SW_DOWN;
-    g_now++;
+    /* 姿态 0 的目标是 0 脉冲；等过防抖后位置环应该输出 0 */
+    g_stepper.position_pulse = 0;
+    g_now += VEHICLE_POSE_DEBOUNCE_MS + 10U;
     VehicleControl_Update(g_now);
-    assert(g_chassis_update_calls == 2U);
-    assert(g_last_stepper_velocity < 0.0f);
+    assert(g_chassis_update_calls >= 2U);
+    assert(g_last_stepper_velocity == 0.0f);
 
-    /* Arm mode ignores pose switches and keeps CH3 as direct manual control. */
-    g_rc.switch_pos[VEHICLE_CH_MODE] = VEHICLE_ARM_MODE_LEVEL;
-    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT1] = RC_SW_DOWN;
-    g_rc.analog[VEHICLE_CH_STEPPER] = 0.0f;
-    g_now++;
+    /* 切到 C 中 + D 下 = 姿态 3（目标 2000 脉冲）：
+     * 防抖时间之内不许动，过了防抖才给正速度。 */
+    g_rc.switch_pos[VEHICLE_CH_POSE_C] = RC_SW_MID;
+    g_rc.switch_pos[VEHICLE_CH_POSE_D] = RC_SW_DOWN;
+    g_now += 10U;
     VehicleControl_Update(g_now);
     assert(g_last_stepper_velocity == 0.0f);
-    g_rc.analog[VEHICLE_CH_STEPPER] = 1.0f;
-    g_now++;
+
+    g_now += VEHICLE_POSE_DEBOUNCE_MS + 10U;
     VehicleControl_Update(g_now);
     assert(g_last_stepper_velocity > 0.0f);
+
+    /* 机械臂模式：忽略 C/D，CH3 就是直接手动控制 */
+    g_rc.switch_pos[VEHICLE_CH_MODE] = VEHICLE_ARM_MODE_LEVEL;
+    g_rc.analog[VEHICLE_CH_STEPPER] = 0.0f;
+    g_now += 10U;
+    VehicleControl_Update(g_now);
+    assert(g_last_stepper_velocity == 0.0f);
+
+    g_rc.analog[VEHICLE_CH_STEPPER] = 1.0f;
+    g_now += 10U;
+    VehicleControl_Update(g_now);
+    assert(g_last_stepper_velocity > 0.0f);
+
     return 0;
 }
