@@ -1,4 +1,3 @@
-
 #ifndef VEHICLE_CONFIG_H
 #define VEHICLE_CONFIG_H
 
@@ -7,8 +6,8 @@
 /*
  * 遥控通道分配（实测 FS-i6X + FS-iA10B，SBUS）
  *
- *   SWB  CH8  : 上 = 底盘模式（安全态，机械臂就地保持）
- *               下 = 机械臂模式
+ *   SWB  CH8  : 上 = 底盘模式（正常驾驶；SWA/SWD 切换预设）
+ *               下 = 机械臂模式（摇杆手动控制）
  *   SWC  CH9  : 上 = 爪子张开   中 = 保持   下 = 爪子合拢
  *   SWA  CH7  : 动作码 bit0（拨下 = 1）
  *   SWD  CH10 : 动作码 bit1（拨下 = 1）
@@ -29,9 +28,6 @@
 #define VEHICLE_ARM_MODE_LEVEL        RC_SW_DOWN /* SWB 下 = 机械臂模式 */
 #define VEHICLE_GRIPPER_OPEN_LEVEL    RC_SW_UP
 #define VEHICLE_GRIPPER_CLOSE_LEVEL   RC_SW_DOWN
-/* 动作码去抖：SWA/SWD 拨到位后要保持这么久才算数，防止三档开关中路过的中间位误触发。 */
-#define VEHICLE_ACTION_STABLE_MS      200U
-#define VEHICLE_REFERENCE_HOLD_MS     500U
 #define VEHICLE_RC_DEADBAND           0.08f
 
 /* 通道自检固件：1 = 灯不再显示状态，改成"闪 N 下 = 第 N 路在动"，
@@ -66,7 +62,7 @@
  *   700Hz @1/8细分 ≈ 158°/s；@1/16细分 ≈ 79°/s   ← 现在
  * 如果换成 700Hz 后出现"一推就掉一截"，说明当前细分/电流下带不动，
  * 按 600 → 500 → 400 往下退，或者把 DM430 的工作电流拨码调大。 */
-#define VEHICLE_STEPPER_MAX_HZ          700.0f  /*大臂电机最大运动速度*/
+#define VEHICLE_STEPPER_MAX_HZ          1000.0f  /*大臂电机最大运动速度*/
 /* 加/减速（脉冲频率变化率）。700Hz 用 8000Hz/s 约 88ms 到满速，
  * 起停不至于太猛，也不会让人觉得"要等半秒才走"。 */
 #define VEHICLE_STEPPER_ACCEL_HZ_S      8000.0f /*大臂电机加速速度*/
@@ -88,9 +84,9 @@
 /* ID-5 C610/M2006 腕部。角度是输出轴弧度，相对人工零点。 */
 #define VEHICLE_WRIST_ID                     0x205U
 #define VEHICLE_WRIST_GEAR_RATIO             36.0f
-#define VEHICLE_WRIST_MIN_RAD                (-3.20f) /*腕部电机最小角度*/
+#define VEHICLE_WRIST_MIN_RAD                (-3.00f) /*腕部电机最小角度*/
 #define VEHICLE_WRIST_MAX_RAD                3.00f /*腕部电机最大角度*/
-#define VEHICLE_WRIST_MAX_RATE_RAD_S         3.00f /*最大角速度*/
+#define VEHICLE_WRIST_MAX_RATE_RAD_S         4.00f /*最大角速度*/
 #define VEHICLE_WRIST_TIMEOUT_MS             100U
 #define VEHICLE_WRIST_REVERSED               0
 
@@ -105,7 +101,7 @@
                                                       * 没有积分项时，臂会在死区里被重力压下去、
                                                       * 再被 P 顶回来，表现为"一顿一顿"的卡顿。 */
 #define VEHICLE_WRIST_GRAVITY_FF             0.0f    /* 重力前馈（原始电流），正负看实测，见 README */
-#define VEHICLE_WRIST_CURRENT_MAX            2500    /* 首次上机保守限流；确认方向、抖动和温升后再上调。 */
+#define VEHICLE_WRIST_CURRENT_MAX            4500   /* 首次上机保守限流；确认方向、抖动和温升后再上调。 */
 #define VEHICLE_WRIST_CURRENT_SLEW           60000.0f /* 原始电流/秒，软启动 + 抑制电流突变 */
 /* 速度反馈低通：ESC 回传的 rpm 本身带量化噪声，直接进 D 项会把噪声放大成电流抖动。 */
 #define VEHICLE_WRIST_VEL_FILTER             0.30f
@@ -118,7 +114,7 @@
 #define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽*/
 #define VEHICLE_LOWER_ARM_SERVO_MIN_US        1100U /*最小脉宽（500 会让舵机顶到机械硬限位，堵转发热）*/
 #define VEHICLE_LOWER_ARM_SERVO_MAX_US        1900U /*最大脉宽（2500 同上）*/
-#define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     622.0f
+#define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     1000.0f
 
 #define VEHICLE_GRIPPER_MIN_DEG        0.0f
 #define VEHICLE_GRIPPER_MAX_DEG        60.0f
@@ -130,7 +126,7 @@
 /* ========================================================================
  * 机械臂预设动作（SWA + SWD 两位二进制）
  *
- *   小臂两种状态 × 腕部两种状态 = 4 个组合
+ *   四个动作码都可以分别配置大臂、小臂和腕部目标。
  *
  *   bit0 = SWA：上 = 小臂 A 位，下 = 小臂 B 位
  *   bit1 = SWD：上 = 腕部 A 位，下 = 腕部 B 位
@@ -140,19 +136,21 @@
  *   10  SWA上 SWD下  ->  小臂A + 腕B
  *   11  SWA下 SWD下  ->  小臂B + 腕B
  *
- * 大臂和爪子不参与预设：大臂永远跟 CH3 摇杆、爪子跟 SWC/CH2，
- * 所以切模式时不会有"大臂自己慢慢爬"的现象。
+ * 预设只在底盘模式解释：爪子不参与预设，始终跟 SWC/CH2；大臂、小臂和腕部一起走预设。
+ * 大臂目标用相对软件零点的脉冲数表示，切换时受已有的速度、加减速和
+ * 行程保护约束。
  *
- * 拨到某个组合后，小臂和腕部一起走到对应位置并保持。
- * 只要动对应摇杆超过死区，就立刻退出预设、切成手动跟随，
- * 直到重新拨动 SWA/SWD（拨到别的组合再拨回来）才会再次执行。
+ * 切入底盘模式后，当前组合只作为基线；之后拨到任一新组合时，大臂、小臂和腕部
+ * 立即走到对应位置并保持。机械臂模式完全忽略 SWA/SWD，只响应摇杆手动控制。
  *
  * ⚠ 下面四个姿态是**占位值**，必须按你的机构实测后替换：
+ *     stepper_pulse: 大臂相对软件零点的脉冲数，范围 VEHICLE_STEPPER_MIN/MAX_PULSE
  *     lower_arm_us : 小臂舵机脉宽，范围 VEHICLE_LOWER_ARM_SERVO_MIN/MAX_US
  *     wrist_rad    : 腕部弧度，相对零点，范围 VEHICLE_WRIST_MIN/MAX_RAD
  * ======================================================================*/
 typedef struct
 {
+    int32_t stepper_pulse;
     float lower_arm_us;
     float wrist_rad;
 } VehiclePose;
@@ -161,13 +159,16 @@ typedef struct
 
 #define VEHICLE_POSE_TABLE                              \
 {                                                       \
-    /* 00 小臂A + 腕A */ { 1500.0f,  0.00f },           \
-    /* 01 小臂B + 腕A */ { 1700.0f,  0.00f },           \
-    /* 10 小臂A + 腕B */ { 1500.0f,  0.60f },           \
-    /* 11 小臂B + 腕B */ { 1700.0f,  0.60f }            \
+    /* 00 大臂零点 + 小臂A + 腕A */ { 0, 1500.0f, 0.00f }, \
+    /* 01 大臂零点 + 小臂B + 腕A */ { 200, 1700.0f, -0.60f }, \
+    /* 10 大臂零点 + 小臂A + 腕B */ { -200, 2000.0f, 0.60f }, \
+    /* 11 大臂零点 + 小臂B + 腕B */ { 0, 1200.0f, 0.60f }  \
 }
 
-/* 到位速度：误差 / FULL = 归一化速度，超过 1 截断；误差小于 DEADBAND 就停。 */
+/* 到位速度：误差 / FULL = 归一化速度，超过 1 截断；误差小于 DEADBAND 就停。
+ * 大臂脉冲相对于首次收到有效遥控后的软件零点。 */
+#define VEHICLE_POSE_STEPPER_FULL_PULSE       1000.0f
+#define VEHICLE_POSE_STEPPER_DEADBAND            10.0f
 #define VEHICLE_POSE_WRIST_FULL_RAD         0.50f
 #define VEHICLE_POSE_WRIST_DEADBAND         0.02f
 #define VEHICLE_POSE_SERVO_FULL_US        200.0f

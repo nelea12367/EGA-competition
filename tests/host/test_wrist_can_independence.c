@@ -18,6 +18,8 @@ static ServoPairState g_servo;
 static unsigned g_stepper_reference_calls;
 static unsigned g_stepper_velocity_calls;
 static unsigned g_lower_arm_servo_calls;
+static unsigned g_chassis_update_calls;
+static float g_last_stepper_velocity;
 
 #include "../../Core/Src/vehicle_control.c"
 
@@ -26,13 +28,15 @@ const RcData *Rc_Get(void) { return &g_rc; }
 bool Rc_IsSignalValid(void) { return g_rc_valid; }
 float Vehicle_AbsF(float value) { return value < 0.0f ? -value : value; }
 
-void Chassis_Update(uint32_t now_ms) { (void)now_ms; }
+void Chassis_Update(uint32_t now_ms) { (void)now_ms; g_chassis_update_calls++; }
 void Chassis_ForceStop(void) { }
 void ArmStepper_Init(void) { memset(&g_stepper, 0, sizeof(g_stepper)); }
 void ArmStepper_SetReference(void) { g_stepper.reference_valid = true; g_stepper_reference_calls++; }
 void ArmStepper_SetVelocity(float velocity_normalized, bool enabled, float dt_s)
 {
-    (void)velocity_normalized; (void)enabled; (void)dt_s; g_stepper_velocity_calls++;
+    (void)enabled; (void)dt_s;
+    g_last_stepper_velocity = velocity_normalized;
+    g_stepper_velocity_calls++;
 }
 void ArmStepper_Stop(void) { }
 const ArmStepperState *ArmStepper_GetState(void) { return &g_stepper; }
@@ -62,24 +66,36 @@ const ServoPairState *ServoPair_GetState(void) { return &g_servo; }
 int main(void)
 {
     g_rc_valid = true;
-    g_rc.switch_pos[VEHICLE_CH_MODE] = VEHICLE_ARM_MODE_LEVEL;
+    g_wrist_online = true;
+    g_rc.switch_pos[VEHICLE_CH_MODE] = RC_SW_UP;
     g_rc.switch_pos[VEHICLE_CH_ACTION_BIT0] = RC_SW_UP;
     g_rc.switch_pos[VEHICLE_CH_ACTION_BIT1] = RC_SW_UP;
     VehicleControl_Init();
 
     g_now = 1U;
     VehicleControl_Update(g_now);
-    g_now = VEHICLE_REFERENCE_HOLD_MS + 1U;
-    VehicleControl_Update(g_now);
-
+    assert(g_chassis_update_calls == 1U);
     assert(g_stepper_reference_calls == 1U);
 
-    g_rc.analog[VEHICLE_CH_STEPPER] = 1.0f;
-    g_rc.analog[VEHICLE_CH_LOWER_ARM] = 1.0f;
+    /* A drive-mode switch change must command the pose immediately while the
+     * chassis update continues; it must not wait for the legacy debounce. */
+    g_stepper.position_pulse = 600;
+    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT0] = RC_SW_DOWN;
     g_now++;
     VehicleControl_Update(g_now);
+    assert(g_chassis_update_calls == 2U);
+    assert(g_last_stepper_velocity < 0.0f);
 
-    assert(g_stepper_velocity_calls > 0U);
-    assert(g_lower_arm_servo_calls > 0U);
+    /* Arm mode ignores pose switches and keeps CH3 as direct manual control. */
+    g_rc.switch_pos[VEHICLE_CH_MODE] = VEHICLE_ARM_MODE_LEVEL;
+    g_rc.switch_pos[VEHICLE_CH_ACTION_BIT1] = RC_SW_DOWN;
+    g_rc.analog[VEHICLE_CH_STEPPER] = 0.0f;
+    g_now++;
+    VehicleControl_Update(g_now);
+    assert(g_last_stepper_velocity == 0.0f);
+    g_rc.analog[VEHICLE_CH_STEPPER] = 1.0f;
+    g_now++;
+    VehicleControl_Update(g_now);
+    assert(g_last_stepper_velocity > 0.0f);
     return 0;
 }
