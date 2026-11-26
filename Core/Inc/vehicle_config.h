@@ -8,9 +8,8 @@
  *
  *   A = SWA  CH7  : 爪子（上 = 张开，下 = 合拢），两种模式下都有效
  *   B = SWB  CH8  : 上 = 底盘模式；下 = 机械臂模式
- *   C = SWC  CH9  : 三档（上/中/下），姿态高位
- *   D = SWD  CH10 : 两档（上/下），姿态低位
- *                   姿态号 = C 档位 × 2 + D 档位  -> 0~5，共六种
+ *   C = SWC  CH9  : 上/下与 D 共同选择预设；中位 = 立即暂停机械臂
+ *   D = SWD  CH10 : 两档（上/下），与 C 上/下组合成四种预设
  *
  *   机械臂模式（B 拨下）：
  *     CH3 左杆上下 -> 大臂（DM430 步进）
@@ -19,7 +18,7 @@
  *     CH1 右杆左右 -> 拨到底并保持 1 秒 = 三个关节一起校准
  *
  *   底盘模式（B 拨上）：
- *     CH3/CH4 平移，CH1 转向；C × D 选机械臂预设姿态
+ *     CH3/CH4 平移，CH1 转向；C 上/下 × D 选机械臂预设，C 中位暂停
  *
  * 没有单独的总使能开关：B 拨上就是安全态。丢掉遥控会立刻停止所有输出。
  */
@@ -37,9 +36,7 @@
 #define VEHICLE_GRIPPER_CLOSE_LEVEL   RC_SW_DOWN
 #define VEHICLE_RC_DEADBAND           0.08f
 
-/* 姿态切换防抖（毫秒）。
- * C 是三档开关，从上拨到下必然经过中间档；等组合稳定这么久再执行，
- * 就能跳过"中间档那个姿态"，机械臂不会先甩一下再到位。 */
+/* 姿态切换防抖（毫秒）。C 中位立即暂停；离开中位后，C/D 组合稳定这么久才执行。 */
 #define VEHICLE_POSE_DEBOUNCE_MS      200U
 
 /* 校准触发（CH1 拨到底）：
@@ -113,14 +110,14 @@
 #define VEHICLE_WRIST_GEAR_RATIO             36.0f
 #define VEHICLE_WRIST_MIN_RAD                (-3.00f) /*腕部电机最小角度*/
 #define VEHICLE_WRIST_MAX_RAD                3.00f /*腕部电机最大角度*/
-#define VEHICLE_WRIST_MAX_RATE_RAD_S         4.00f /*最大角速度*/
+#define VEHICLE_WRIST_MAX_RATE_RAD_S         6.00f /*腕部最大角速度*/
 #define VEHICLE_WRIST_TIMEOUT_MS             100U
 #define VEHICLE_WRIST_REVERSED               0
 
 /* 位置环 PID。原来的纯 P(4500) 增益过大：1° 误差就能顶到限幅，
  * 配上齿隙/静摩擦就是典型的 bang-bang 自激，表现为腕部一直嗡嗡抖。 */
 #define VEHICLE_WRIST_KP                     1200.0f
-#define VEHICLE_WRIST_KD                     120.0f  /* 对速度误差阻尼，单位 原始电流/(rad/s) */
+#define VEHICLE_WRIST_KD                     500.0f  /* 手动速度误差增益，单位 原始电流/(rad/s) */
 #define VEHICLE_WRIST_KI                     0.0f     /* 首次上机先关闭积分；PD 稳定后再逐步整定。 */
 #define VEHICLE_WRIST_KI_BAND_RAD            0.25f   /* 误差超过这个范围不积分，避免换向顶死 */
 #define VEHICLE_WRIST_HOLD_VEL_RAD_S         0.05f   /* 目标速度低于它才算"停住保持" */
@@ -129,9 +126,13 @@
                                                       * 再被 P 顶回来，表现为"一顿一顿"的卡顿。 */
 #define VEHICLE_WRIST_GRAVITY_FF             0.0f    /* 重力前馈（原始电流），正负看实测，见 README */
 #define VEHICLE_WRIST_CURRENT_MAX            4500   /* 首次上机保守限流；确认方向、抖动和温升后再上调。 */
-#define VEHICLE_WRIST_CURRENT_SLEW           60000.0f /* 原始电流/秒，软启动 + 抑制电流突变 */
+#define VEHICLE_WRIST_CURRENT_SLEW           250000.0f /* 原始电流/秒，缩短手动速度环起步时间 */
 /* 速度反馈低通：ESC 回传的 rpm 本身带量化噪声，直接进 D 项会把噪声放大成电流抖动。 */
 #define VEHICLE_WRIST_VEL_FILTER             0.30f
+/* 手动摇杆超过此归一化量后使用速度环；回到此范围内即锁住当前位置。 */
+#define VEHICLE_WRIST_VELOCITY_MODE_THRESHOLD 0.05f
+/* 手动速度前馈，单位为原始电流/(rad/s)。初值 0，确认方向后可逐步增大。 */
+#define VEHICLE_WRIST_VEL_FF                  120.0f
 /* PID 按 1kHz 跑；0x1FF 发 500Hz（2ms）已经足够平滑，再高只是占总线。 */
 #define VEHICLE_WRIST_SEND_PERIOD_MS         2U
 
@@ -163,7 +164,7 @@
  * 摇杆推到底就是这么多度/秒。改手感只改这三个数，不用再换算脉冲/脉宽/弧度。 */
 #define VEHICLE_STEPPER_MANUAL_DPS            90.0f   /* 大臂 */
 #define VEHICLE_LOWER_ARM_MANUAL_DPS          84.0f   /* 小臂（≈1500us 到 2125us 的速度） */
-#define VEHICLE_WRIST_MANUAL_DPS             172.0f   /* 腕部（≈原来 3.0 rad/s） */
+#define VEHICLE_WRIST_MANUAL_DPS             344.0f   /* 腕部（满杆请求 6.0对应速度 rad/s） */
 
 /* ---- 机械臂校准角度 ----
  * "校准"= 把当前位置定义成下面这个角度。开机自动做一次，
@@ -180,17 +181,14 @@
 #define VEHICLE_GRIPPER_RATE_DEG_S     200.0f /* 原来是 90，开合 60° 要走 0.67s，看起来像"延迟" */
 
 /* ========================================================================
- * 机械臂预设动作（SWA + SWD 两位二进制）
+ * 机械臂预设动作（SWC 上/下 + SWD）
  *
- *   六种姿态由 C（三档）× D（两档）组合决定：
+ *   四种姿态由 C（上/下）× D（上/下）组合决定：
  *
- *     姿态号 = C 档位 × 2 + D 档位
- *     C：0 = 上，1 = 中，2 = 下
- *     D：0 = 上，1 = 下
+ *     0  C上 D上      2  C下 D上
+ *     1  C上 D下      3  C下 D下
  *
- *     0  C上 D上      3  C中 D下
- *     1  C上 D下      4  C下 D上
- *     2  C中 D上      5  C下 D下
+ *   C 中位：立刻停止三个关节继续前往预设，并保持进入中位时的位置；D 被忽略。
  *
  * 预设只在底盘模式解释：爪子不参与预设，始终跟 A(SWA)；大臂、小臂和腕部一起走预设。
  * 三个目标都用「度」表示，切换时受已有的速度、加减速和行程保护约束。
@@ -198,7 +196,7 @@
  * 切入底盘模式后，当前组合只作为基线；之后拨到任一新组合时，大臂、小臂和腕部
  * 立即走到对应位置并保持。机械臂模式完全忽略 C/D，只响应摇杆手动控制。
  *
- * ⚠ 下面六个姿态是**占位值**，必须按你的机构实测后替换。
+ * ⚠ 下面四个姿态是**占位值**，必须按你的机构实测后替换。
  *    单位统一是「度」，正值/负值按你定义的正方向：
  *    stepper_deg   : 大臂，相对校准零点（范围由 VEHICLE_STEPPER_MIN/MAX_PULSE 限制）
  *    lower_arm_deg : 小臂，0° = 参考脉宽 1500us（范围受 MIN/MAX_US 限制）
@@ -212,16 +210,14 @@ typedef struct
     float wrist_deg;
 } VehiclePose;
 
-#define VEHICLE_POSE_COUNT 6U
+#define VEHICLE_POSE_COUNT 4U
 
 #define VEHICLE_POSE_TABLE                                          \
 {                                                                   \
-    /* 姿态0  C上 + D上 */ {   0.0f,   0.0f,   0.0f },              \
+    /* 姿态0  C上 + D上  大臂 小臂 腕部*/ {   0.0f,   0.0f,   0.0f },              \
     /* 姿态1  C上 + D下 */ {  20.0f,  20.0f, -20.0f },              \
-    /* 姿态2  C中 + D上 */ { -20.0f,  40.0f,  20.0f },              \
-    /* 姿态3  C中 + D下 */ {  40.0f,  60.0f,  40.0f },              \
-    /* 姿态4  C下 + D上 */ { -40.0f, -20.0f, -40.0f },              \
-    /* 姿态5  C下 + D下 */ {   0.0f,  80.0f,   0.0f }               \
+    /* 姿态2  C下 + D上 */ { -40.0f, -20.0f, -40.0f },              \
+    /* 姿态3  C下 + D下 */ {   0.0f,  80.0f,   0.0f }               \
 }
 
 /* 到位速度：误差(度) / FULL = 归一化速度，超过 1 截断；误差小于 DEADBAND 就停。 */

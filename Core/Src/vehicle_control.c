@@ -18,12 +18,12 @@ static uint32_t s_last_ms;
 static uint32_t s_last_chassis_zero_ms;
 static VehicleMode s_last_mode;
 
-/* 姿态选择：C（三档）× D（两档）= 六种组合。
- * 姿态号 = C 档位 × 2 + D 档位，需要防抖——C 从上拨到下必经中间档。 */
+/* 姿态选择：C（上/下）× D（上/下）= 四种组合；C 中位用于立即暂停。 */
 static uint8_t s_pose_pending;       /* 最近读到的姿态号 */
 static uint8_t s_pose_applied;       /* 已生效的姿态号，0xFF = 还没生效 */
 static uint32_t s_pose_since_ms;     /* 当前组合第一次出现的时间 */
 static bool s_pose_active;           /* 正在跑预设姿态 */
+static bool s_pose_paused;           /* SWC 中位：锁住进入中位时的位置 */
 
 /* 校准触发状态机（CH1 拨到底保持 1 秒） */
 static bool s_cal_armed;             /* 已回过中，允许下一次触发 */
@@ -55,23 +55,27 @@ static float VehicleAxis(const RcData *rc, uint8_t channel)
 }
 
 /**
- * @brief 把 C（三档）× D（两档）翻译成 0~5 的姿态号。
+ * @brief 把 C（上/下）× D（上/下）翻译成 0~3 的姿态号。
  *
- *   姿态号 = C 档位 × 2 + D 档位
- *   C：0 = 上，1 = 中，2 = 下
+ *   C：上 = 0/1，下 = 2/3；中位不是姿态，返回 false 让调用方暂停。
  *   D：0 = 上，1 = 下
  */
-static uint8_t VehiclePoseIndex(const RcData *rc)
+static bool VehiclePoseIndex(const RcData *rc, uint8_t *pose)
 {
     uint8_t sw = rc->switch_pos[VEHICLE_CH_POSE_C];
-    uint8_t c;
 
-    /* 用"等于哪一档"判定，不依赖 RC_SW_* 的具体数值 */
-    if (sw == RC_SW_UP)        c = 0U;   /* 上 */
-    else if (sw == RC_SW_DOWN) c = 2U;   /* 下 */
-    else                       c = 1U;   /* 其余一律当中间档 */
+    if (sw == RC_SW_UP)
+    {
+        *pose = (rc->switch_pos[VEHICLE_CH_POSE_D] == RC_SW_DOWN) ? 1U : 0U;
+        return true;
+    }
+    if (sw == RC_SW_DOWN)
+    {
+        *pose = (rc->switch_pos[VEHICLE_CH_POSE_D] == RC_SW_DOWN) ? 3U : 2U;
+        return true;
+    }
 
-    return (uint8_t)(c * 2U + ((rc->switch_pos[VEHICLE_CH_POSE_D] == RC_SW_DOWN) ? 1U : 0U));
+    return false;
 }
 
 /**
@@ -156,11 +160,6 @@ static float VehicleLowerArmDeg(void)
             VEHICLE_LOWER_ARM_US_PER_DEG);
 }
 
-static float VehicleWristDeg(void)
-{
-    return (Arm2006_GetState()->angle_rad * 57.2957795f) + s_wrist_off_deg;
-}
-
 /* 把 -1~1 之外的值夹回边界 */
 static float VehicleClampUnit(float value)
 {
@@ -224,13 +223,11 @@ static void VehicleEnsureReferences(void)
     }
 }
 
-/* 预设只在底盘模式解释。C 是三档开关，从上拨到下必然经过中间档，
- * 所以等组合稳定 VEHICLE_POSE_DEBOUNCE_MS 之后才执行，跳过中间那个姿态。 */
-static void VehicleUpdateDrivePose(uint32_t now_ms, const RcData *rc)
+/* 预设只在底盘模式解释。C 中位由调用方立即暂停；C 回到上/下后，
+ * 等 C/D 组合稳定 VEHICLE_POSE_DEBOUNCE_MS 才执行对应预设。 */
+static void VehicleUpdateDrivePose(uint32_t now_ms, uint8_t pose)
 {
-    uint8_t pose = VehiclePoseIndex(rc);
-
-    /* 刚切入底盘模式：把当前组合当基线，稳定一段时间后再执行 */
+    /* 刚切入底盘模式或刚解除中位暂停：稳定一段时间后才执行。 */
     if (s_pose_applied == 0xFFU)
     {
         s_pose_pending = pose;
@@ -273,6 +270,7 @@ void VehicleControl_Init(void)
     s_pose_applied = 0xFFU;   /* 还没生效任何姿态 */
     s_pose_since_ms = 0U;
     s_pose_active = false;
+    s_pose_paused = false;
     s_cal_armed = false;
     s_cal_since_ms = 0U;
     ArmStepper_Init();
@@ -348,15 +346,57 @@ void VehicleControl_Update(uint32_t now_ms)
     if (s_state.mode == VEHICLE_MODE_DRIVE)
     {
         const VehiclePose *pose;
+        uint8_t pose_index;
 
         /* 每次切入底盘模式都重新贴一次姿态（角度基准可能刚被校准改过）。 */
         if (s_last_mode != VEHICLE_MODE_DRIVE)
         {
             s_pose_active = false;
+            s_pose_paused = false;
             s_pose_applied = 0xFFU;
             s_pose_since_ms = 0U;
         }
-        VehicleUpdateDrivePose(now_ms, rc);
+
+        if (!VehiclePoseIndex(rc, &pose_index))
+        {
+            /* SWC 中位：立即取消预设，并只在进入中位的第一拍锁住腕部位置。 */
+            if (!s_pose_paused)
+            {
+                s_pose_paused = true;
+                s_pose_active = false;
+                s_pose_pending = 0xFFU;
+                s_pose_since_ms = 0U;
+                if (s_state.wrist_reference_valid)
+                {
+                    Arm2006_SetTargetAngle(Arm2006_GetState()->angle_rad);
+                }
+            }
+
+            StepperSoftStop(dt_s);
+            if (s_state.wrist_reference_valid)
+            {
+                Arm2006_Update(now_ms, dt_s, true);
+            }
+            else
+            {
+                Arm2006_Stop();
+            }
+            ServoPair_HoldSafe();
+            VehicleClawUpdate(rc, dt_s);
+            Chassis_Update(now_ms);
+            s_last_mode = s_state.mode;
+            return;
+        }
+
+        if (s_pose_paused)
+        {
+            /* 离开中位后，从当前 C/D 组合重新计防抖时间。 */
+            s_pose_paused = false;
+            s_pose_active = false;
+            s_pose_applied = 0xFFU;
+            s_pose_since_ms = 0U;
+        }
+        VehicleUpdateDrivePose(now_ms, pose_index);
         if (s_pose_applied >= VEHICLE_POSE_COUNT) s_pose_applied = 0U;
         pose = &s_poses[s_pose_applied];
 
@@ -377,9 +417,8 @@ void VehicleControl_Update(uint32_t now_ms)
 
             if (s_state.wrist_reference_valid)
             {
-                Arm2006_SetVelocity(VehicleApproach(pose->wrist_deg - VehicleWristDeg(),
-                                                     VEHICLE_POSE_WRIST_FULL_DEG,
-                                                     VEHICLE_POSE_WRIST_DEADBAND));
+                /* 预设必须走位置目标接口；手动摇杆的速度环不能替代它。 */
+                Arm2006_SetTargetAngle(pose->wrist_deg * 0.0174532925f - s_wrist_off_deg);
                 Arm2006_Update(now_ms, dt_s, true);
             }
             else

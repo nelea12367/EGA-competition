@@ -20,6 +20,17 @@ if ($LASTEXITCODE -ne 0) { throw "host-test compile failed" }
 & $out
 if ($LASTEXITCODE -ne 0) { throw "host test failed" }
 
+$arm2006Out = Join-Path $PSScriptRoot "test_arm_2006_control.exe"
+& $compiler.Source -std=c11 -Wall -Wextra -Werror `
+    (Join-Path $PSScriptRoot "test_arm_2006_control.c") `
+    ("-I" + (Join-Path $PSScriptRoot "stubs")) `
+    ("-I" + (Join-Path $root "Core\Inc")) `
+    "-o" $arm2006Out
+if ($LASTEXITCODE -ne 0) { throw "arm 2006 control test compile failed" }
+
+& $arm2006Out
+if ($LASTEXITCODE -ne 0) { throw "arm 2006 control test failed" }
+
 & (Join-Path $PSScriptRoot "test_joint_routing.ps1")
 & (Join-Path $PSScriptRoot "test_stepper_pin_routing.ps1")
 & (Join-Path $PSScriptRoot "test_arm_safety_config.ps1")

@@ -19,7 +19,9 @@ static unsigned g_stepper_reference_calls;
 static unsigned g_stepper_velocity_calls;
 static unsigned g_lower_arm_servo_calls;
 static unsigned g_chassis_update_calls;
+static unsigned g_wrist_target_calls;
 static float g_last_stepper_velocity;
+static float g_last_wrist_target;
 
 #include "../../Core/Src/vehicle_control.c"
 
@@ -47,6 +49,11 @@ void Arm2006_OnCanRx(uint32_t id, const uint8_t *data, uint8_t len)
 }
 void Arm2006_SetReference(void) { g_wrist.reference_valid = true; }
 void Arm2006_SetVelocity(float normalized_velocity) { (void)normalized_velocity; }
+void Arm2006_SetTargetAngle(float target_rad)
+{
+    g_last_wrist_target = target_rad;
+    g_wrist_target_calls++;
+}
 void Arm2006_Update(uint32_t now_ms, float dt_s, bool enabled)
 {
     (void)now_ms; (void)dt_s; (void)enabled;
@@ -77,24 +84,25 @@ int main(void)
     assert(g_chassis_update_calls == 1U);
     assert(g_stepper_reference_calls == 1U);
 
-    /* 姿态 0 的目标是 0 脉冲；等过防抖后位置环应该输出 0 */
+    /* 姿态 0 的大臂目标是 0°；等过防抖后位置环应该输出 0。 */
     g_stepper.position_pulse = 0;
     g_now += VEHICLE_POSE_DEBOUNCE_MS + 10U;
     VehicleControl_Update(g_now);
     assert(g_chassis_update_calls >= 2U);
     assert(g_last_stepper_velocity == 0.0f);
 
-    /* 切到 C 中 + D 下 = 姿态 3（目标 2000 脉冲）：
-     * 防抖时间之内不许动，过了防抖才给正速度。 */
+    /* SWC 中位立即冻结当前位置：无论 SWD 在哪里，都不能继续跑旧姿态，
+     * 更不能把中位解释成另一个预设。 */
+    g_stepper.position_pulse = 1000;
+    g_wrist.angle_rad = 0.60f;
     g_rc.switch_pos[VEHICLE_CH_POSE_C] = RC_SW_MID;
     g_rc.switch_pos[VEHICLE_CH_POSE_D] = RC_SW_DOWN;
     g_now += 10U;
     VehicleControl_Update(g_now);
     assert(g_last_stepper_velocity == 0.0f);
-
-    g_now += VEHICLE_POSE_DEBOUNCE_MS + 10U;
-    VehicleControl_Update(g_now);
-    assert(g_last_stepper_velocity > 0.0f);
+    assert(g_wrist_target_calls > 0U);
+    assert(g_last_wrist_target > 0.59f);
+    assert(g_last_wrist_target < 0.61f);
 
     /* 机械臂模式：忽略 C/D，CH3 就是直接手动控制 */
     g_rc.switch_pos[VEHICLE_CH_MODE] = VEHICLE_ARM_MODE_LEVEL;

@@ -39,8 +39,27 @@
 #define VEHICLE_LOWER_ARM_MANUAL_DPS 84.0f
 
 /* Wrist */
-#define VEHICLE_WRIST_MANUAL_DPS 172.0f
-#define VEHICLE_WRIST_MAX_RATE_RAD_S 4.00f
+#define VEHICLE_WRIST_ID 0x205U
+#define VEHICLE_WRIST_GEAR_RATIO 36.0f
+#define VEHICLE_WRIST_MIN_RAD (-3.0f)
+#define VEHICLE_WRIST_MAX_RAD 3.0f
+#define VEHICLE_WRIST_MANUAL_DPS 344.0f
+#define VEHICLE_WRIST_MAX_RATE_RAD_S 6.00f
+#define VEHICLE_WRIST_TIMEOUT_MS 100U
+#define VEHICLE_WRIST_REVERSED 0
+#define VEHICLE_WRIST_KP 1200.0f
+#define VEHICLE_WRIST_KD 500.0f
+#define VEHICLE_WRIST_KI 0.0f
+#define VEHICLE_WRIST_KI_BAND_RAD 0.25f
+#define VEHICLE_WRIST_HOLD_VEL_RAD_S 0.05f
+#define VEHICLE_WRIST_POS_DEADBAND 0.002f
+#define VEHICLE_WRIST_GRAVITY_FF 0.0f
+#define VEHICLE_WRIST_CURRENT_MAX 4500
+#define VEHICLE_WRIST_CURRENT_SLEW 250000.0f
+#define VEHICLE_WRIST_VEL_FILTER 0.30f
+#define VEHICLE_WRIST_SEND_PERIOD_MS 2U
+#define VEHICLE_WRIST_VELOCITY_MODE_THRESHOLD 0.05f
+#define VEHICLE_WRIST_VEL_FF 120.0f
 
 /* Calibration reference angles */
 #define VEHICLE_CAL_STEPPER_DEG 0.0f
@@ -53,17 +72,14 @@ typedef struct
     float wrist_deg;
 } VehiclePose;
 
-/* Pose index = C position * 2 + D position. Values chosen so the assertions can
- * tell the poses apart (pose 0 = 0 deg, pose 3 = 90 deg). */
-#define VEHICLE_POSE_COUNT 6U
+/* Only C up/down select poses; C middle immediately pauses all joints. */
+#define VEHICLE_POSE_COUNT 4U
 #define VEHICLE_POSE_TABLE                     \
 {                                              \
     {    0.0f, 0.0f, 0.0f },  /* 0 C up,   D up   */ \
     {   10.0f, 0.0f, 0.0f },  /* 1 C up,   D down */ \
-    {   20.0f, 0.0f, 0.0f },  /* 2 C mid,  D up   */ \
-    {   90.0f, 0.0f, 0.0f },  /* 3 C mid,  D down */ \
-    {  -90.0f, 0.0f, 0.0f },  /* 4 C down, D up   */ \
-    {  -50.0f, 0.0f, 0.0f }   /* 5 C down, D down */ \
+    {  -40.0f, 0.0f, 0.0f },  /* 2 C down, D up   */ \
+    {    0.0f,80.0f, 0.0f }   /* 3 C down, D down */ \
 }
 
 #define VEHICLE_POSE_STEPPER_FULL_DEG 150.0f

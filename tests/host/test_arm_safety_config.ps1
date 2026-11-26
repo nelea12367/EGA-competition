@@ -25,6 +25,22 @@ if ([int]$m.Groups[1].Value -gt 5000) {
 }
 
 foreach ($setting in @(
+    'VEHICLE_WRIST_MAX_RATE_RAD_S\s+6\.00f',
+    'VEHICLE_WRIST_MANUAL_DPS\s+344\.0f',
+    'VEHICLE_WRIST_KD\s+500\.0f',
+    'VEHICLE_WRIST_VEL_FF\s+120\.0f',
+    'VEHICLE_WRIST_CURRENT_SLEW\s+250000\.0f'
+)) {
+    if ($config -notmatch $setting) {
+        throw "Wrist speed-response setting missing: $setting"
+    }
+}
+
+if ([int]$m.Groups[1].Value -ne 4500) {
+    throw "Wrist speed tuning must not raise VEHICLE_WRIST_CURRENT_MAX above its validated 4500 setting."
+}
+
+foreach ($setting in @(
     'RCC.SYSCLKFreq_VALUE=264000000',
     'RCC.Tim1OutputFreq_Value=264000000',
     'RCC.Tim2OutputFreq_Value=264000000',
