@@ -18,10 +18,12 @@ static ServoPairState g_servo;
 static unsigned g_stepper_reference_calls;
 static unsigned g_stepper_velocity_calls;
 static unsigned g_lower_arm_servo_calls;
+static unsigned g_gripper_rate_calls;
 static unsigned g_chassis_update_calls;
 static unsigned g_wrist_target_calls;
 static float g_last_stepper_velocity;
 static float g_last_wrist_target;
+static float g_last_gripper_rate;
 
 #include "../../Core/Src/vehicle_control.c"
 
@@ -66,7 +68,12 @@ void ServoPair_SetLowerArmRate(float normalized_rate, float dt_s)
 {
     (void)normalized_rate; (void)dt_s; g_lower_arm_servo_calls++;
 }
-void ServoPair_SetGripperRate(float normalized_rate, float dt_s) { (void)normalized_rate; (void)dt_s; }
+void ServoPair_SetGripperRate(float normalized_rate, float dt_s)
+{
+    (void)dt_s;
+    g_last_gripper_rate = normalized_rate;
+    g_gripper_rate_calls++;
+}
 void ServoPair_HoldSafe(void) { }
 const ServoPairState *ServoPair_GetState(void) { return &g_servo; }
 
@@ -115,6 +122,32 @@ int main(void)
     g_now += 10U;
     VehicleControl_Update(g_now);
     assert(g_last_stepper_velocity > 0.0f);
+
+    /* A mode change must retain the gripper's current position until the
+     * operator explicitly changes SWA.  Otherwise entering drive mode can
+     * replay SWA's parked position as an unintended gripper command. */
+    g_gripper_rate_calls = 0U;
+    g_rc.switch_pos[VEHICLE_CH_GRIPPER] = VEHICLE_GRIPPER_OPEN_LEVEL;
+    g_now += 10U;
+    VehicleControl_Update(g_now);
+    assert(g_gripper_rate_calls == 0U);
+
+    g_rc.switch_pos[VEHICLE_CH_GRIPPER] = VEHICLE_GRIPPER_CLOSE_LEVEL;
+    g_now += 10U;
+    VehicleControl_Update(g_now);
+    assert(g_gripper_rate_calls == 1U);
+    assert(g_last_gripper_rate < 0.0f);
+
+    g_rc.switch_pos[VEHICLE_CH_MODE] = RC_SW_UP; /* Switch to drive mode. */
+    g_now += 10U;
+    VehicleControl_Update(g_now);
+    assert(g_gripper_rate_calls == 1U);
+
+    g_rc.switch_pos[VEHICLE_CH_GRIPPER] = VEHICLE_GRIPPER_OPEN_LEVEL;
+    g_now += 10U;
+    VehicleControl_Update(g_now);
+    assert(g_gripper_rate_calls == 2U);
+    assert(g_last_gripper_rate > 0.0f);
 
     return 0;
 }

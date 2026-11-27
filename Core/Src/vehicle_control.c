@@ -17,6 +17,8 @@ static VehicleControlState s_state;
 static uint32_t s_last_ms;
 static uint32_t s_last_chassis_zero_ms;
 static VehicleMode s_last_mode;
+static uint8_t s_gripper_switch;
+static bool s_gripper_wait_for_change;
 
 /* 姿态选择：C（上/下）× D（上/下）= 四种组合；C 中位用于立即暂停。 */
 static uint8_t s_pose_pending;       /* 最近读到的姿态号 */
@@ -80,14 +82,30 @@ static bool VehiclePoseIndex(const RcData *rc, uint8_t *pose)
 
 /**
  * @brief 爪子：A（SWA）拨上 = 张开，拨下 = 合拢。两种模式下都一样。
+ *
+ * 模式切换时会先进入保持态，直到 SWA 实际变档才重新执行开/合，避免
+ * 把切换前停留的开关位置当成一次新的爪子动作。
  */
 static void VehicleClawUpdate(const RcData *rc, float dt_s)
 {
-    if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_OPEN_LEVEL)
+    uint8_t gripper_switch = rc->switch_pos[VEHICLE_CH_GRIPPER];
+
+    if (s_gripper_wait_for_change)
+    {
+        if (gripper_switch == s_gripper_switch)
+        {
+            ServoPair_HoldSafe();
+            return;
+        }
+        s_gripper_wait_for_change = false;
+    }
+
+    s_gripper_switch = gripper_switch;
+    if (gripper_switch == VEHICLE_GRIPPER_OPEN_LEVEL)
     {
         ServoPair_SetGripperRate(1.0f, dt_s);
     }
-    else if (rc->switch_pos[VEHICLE_CH_GRIPPER] == VEHICLE_GRIPPER_CLOSE_LEVEL)
+    else if (gripper_switch == VEHICLE_GRIPPER_CLOSE_LEVEL)
     {
         ServoPair_SetGripperRate(-1.0f, dt_s);
     }
@@ -266,6 +284,8 @@ void VehicleControl_Init(void)
     s_last_ms = HAL_GetTick();
     s_last_chassis_zero_ms = 0U;
     s_last_mode = VEHICLE_MODE_DRIVE;
+    s_gripper_switch = RC_SW_MID;
+    s_gripper_wait_for_change = false;
     s_pose_pending = 0U;
     s_pose_applied = 0xFFU;   /* 还没生效任何姿态 */
     s_pose_since_ms = 0U;
@@ -339,6 +359,12 @@ void VehicleControl_Update(uint32_t now_ms)
         VehicleControl_StopMotion();
         s_last_mode = s_state.mode;
         return;
+    }
+
+    if (s_state.mode != s_last_mode)
+    {
+        s_gripper_switch = rc->switch_pos[VEHICLE_CH_GRIPPER];
+        s_gripper_wait_for_change = true;
     }
 
     VehicleEnsureReferences();
