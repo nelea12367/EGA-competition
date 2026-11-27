@@ -136,13 +136,13 @@
 /* PID 按 1kHz 跑；0x1FF 发 500Hz（2ms）已经足够平滑，再高只是占总线。 */
 #define VEHICLE_WRIST_SEND_PERIOD_MS         2U
 
-/* TIM1_CH1 小臂舵机：**180° 舵机（youmi YM-3245）**
+/* TIM1_CH1 小臂舵机：**270° 舵机**
  *
- *   500us = 0°      1500us = 90°（中位）      2500us = 180°
- *   每度 = 2000us / 180° = 11.111us
+ *   500us = -135°   1500us = 0°（软件零点）   2500us = +135°
+ *   每度 = 2000us / 270° = 7.407us
  *
  * MIN/MAX 就是"允许输出到舵机的脉宽"：
- *   500~2500 = 满行程 180°（舵机规格书的极限）
+ *   500~2500 = 满行程 270°（舵机规格书的极限）
  *   现在按满行程给，如果两端出现嗡嗡声/发热（顶到舵机内部限位或机构限位），
  *   把对应那一侧往中间收 60~100us，例如 560 / 2440（≈±85°）。
  *
@@ -151,12 +151,12 @@
  *   180°: US_PER_DEG = 2000/180 = 11.111   <- 现在用这个
  */
 #define VEHICLE_LOWER_ARM_SERVO_BOOT_US       1500U /*小臂舵机上电初始脉宽（中位 = 0°）*/
-#define VEHICLE_LOWER_ARM_SERVO_MIN_US         500U /*最小脉宽 = -90°*/
-#define VEHICLE_LOWER_ARM_SERVO_MAX_US        2500U /*最大脉宽 = +90°*/
-#define VEHICLE_LOWER_ARM_SERVO_RATE_US_S     1000.0f /* 脉宽变化率：1000us/s ≈ 90°/s */
+#define VEHICLE_LOWER_ARM_SERVO_MIN_US         500U /*最小脉宽 = -135°*/
+#define VEHICLE_LOWER_ARM_SERVO_MAX_US        2500U /*最大脉宽 = +135°*/
+#define VEHICLE_LOWER_ARM_SERVO_RATE_US_S      666.6667f /* 脉宽变化率：≈90°/s */
 
-/* 180° 舵机：每度 11.111us。参考脉宽 1500us 对应 0°。 */
-#define VEHICLE_LOWER_ARM_US_PER_DEG          11.111f
+/* 270° 舵机：每度 7.407us。参考脉宽 1500us 对应 0°。 */
+#define VEHICLE_LOWER_ARM_US_PER_DEG          7.4074075f
 #define VEHICLE_LOWER_ARM_ZERO_US             1500.0f
 #define VEHICLE_LOWER_ARM_ZERO_DEG            0.0f
 

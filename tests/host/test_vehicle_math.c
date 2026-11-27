@@ -1,4 +1,5 @@
 #include "vehicle_math.h"
+#include "vehicle_config.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -30,6 +31,18 @@ int main(void)
     /* Fractional microseconds must accumulate instead of being truncated each 1 ms loop. */
     assert(Vehicle_AbsF(Vehicle_UpdatePulseUs(1500.0f, 1.0f, 600.0f, 0.001f,
                                              1200.0f, 1700.0f) - 1500.6f) < 0.001f);
+
+    /* A 270-degree lower-arm servo, centred at 1500us, must expose 135
+     * degrees of usable software travel on either side without making preset
+     * motion faster than the prior 90 degrees per second. */
+    assert(Vehicle_AbsF(((float)VEHICLE_LOWER_ARM_SERVO_BOOT_US -
+                         (float)VEHICLE_LOWER_ARM_SERVO_MIN_US) /
+                        VEHICLE_LOWER_ARM_US_PER_DEG - 135.0f) < 0.01f);
+    assert(Vehicle_AbsF(((float)VEHICLE_LOWER_ARM_SERVO_MAX_US -
+                         (float)VEHICLE_LOWER_ARM_SERVO_BOOT_US) /
+                        VEHICLE_LOWER_ARM_US_PER_DEG - 135.0f) < 0.01f);
+    assert(Vehicle_AbsF(VEHICLE_LOWER_ARM_SERVO_RATE_US_S /
+                         VEHICLE_LOWER_ARM_US_PER_DEG - 90.0f) < 0.01f);
 
     /* C610 ID 5 owns only slot 0 of the 0x1FF frame. */
     Vehicle_PackCurrentFrame(1234, 0, 0, 0, data);
